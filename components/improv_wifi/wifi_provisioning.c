@@ -5,8 +5,6 @@
  *      Author: karl
  */
 
-#include "wifi_provisioning.h"
-
 #include <string.h>
 
 #include "driver/uart.h"

@@ -4,14 +4,16 @@
 
     Must be taken over/merge with wifi provision
 */
+
 #include "wifi_interface.h"
 
-// #include "esp_event.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif_types.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "network_interface.h"
 #include "nvs_flash.h"
 
 #if ENABLE_WIFI_PROVISIONING
@@ -73,49 +75,57 @@ static void event_handler(void *arg, esp_event_base_t event_base, int event_id,
                           void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
-  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-    ESP_LOGI(TAG, "Connected with IP Address:" IPSTR,
-             IP2STR(&event->ip_info.ip));
-
-    s_retry_num = 0;
-    // Signal main application to continue execution
-    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     if ((s_retry_num < WIFI_MAXIMUM_RETRY) || (WIFI_MAXIMUM_RETRY == 0)) {
       esp_wifi_connect();
       s_retry_num++;
       ESP_LOGI(TAG, "retry to connect to the AP");
-    } else {
-      xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
     }
+
     ESP_LOGI(TAG, "connect to the AP fail");
   }
 }
 
-void wifi_init(void) {
-  s_wifi_event_group = xEventGroupCreate();
+/** Event handler for IP_EVENT_ETH_GOT_IP */
+static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
+                                 int32_t event_id, void *event_data) {
+  ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+  if (!network_is_our_netif(NETWORK_INTERFACE_DESC_STA, event->esp_netif)) {
+    return;
+  }
 
-  ESP_ERROR_CHECK(esp_netif_init());
+  const esp_netif_ip_info_t *ip_info = &event->ip_info;
 
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  ESP_LOGI(TAG, "Wifi Got IP Address");
+  ESP_LOGI(TAG, "~~~~~~~~~~~");
+  ESP_LOGI(TAG, "WIFIIP:" IPSTR, IP2STR(&ip_info->ip));
+  ESP_LOGI(TAG, "WIFIMASK:" IPSTR, IP2STR(&ip_info->netmask));
+  ESP_LOGI(TAG, "WIFIGW:" IPSTR, IP2STR(&ip_info->gw));
+  ESP_LOGI(TAG, "~~~~~~~~~~~");
 
-  ESP_ERROR_CHECK(esp_event_handler_register(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, (esp_event_handler_t)&event_handler, NULL));
-  ESP_ERROR_CHECK(
-      esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                 (esp_event_handler_t)&event_handler, NULL));
+  s_retry_num = 0;
+}
 
-  esp_wifi_netif = esp_netif_create_default_wifi_sta();
-
+/**
+ */
+void wifi_start(void) {
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-  // esp_wifi_set_bandwidth (WIFI_IF_STA, WIFI_BW_HT20);
-  esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40);
-  esp_wifi_set_protocol(
-      WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+  esp_netif_inherent_config_t esp_netif_config =
+      ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
+  // Warning: the interface desc is used in tests to capture actual connection
+  // details (IP, gw, mask)
+  esp_netif_config.if_desc = NETWORK_INTERFACE_DESC_STA;
+  esp_netif_config.route_prio = 128;
+  esp_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &esp_netif_config);
+  esp_wifi_set_default_wifi_sta_handlers();
+
+  ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40));
+
+  ESP_ERROR_CHECK(esp_wifi_set_protocol(
+      WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
 
   // esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   //   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -191,39 +201,17 @@ void wifi_init(void) {
   /* Start Wi-Fi station */
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+
+  ESP_ERROR_CHECK(esp_event_handler_register(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, (esp_event_handler_t)&event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                             &got_ip_event_handler, NULL));
+
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(TAG, "wifi_init_sta finished.");
+  ESP_LOGI(TAG, "wifi_init_sta finished. Trying to connect to %s",
+           wifi_config.sta.ssid);
 #endif
-
-  /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
-   * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
-   * bits are set by event_handler() (see above) */
-  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                         pdFALSE, pdFALSE, portMAX_DELAY);
-
-  /* xEventGroupWaitBits() returns the bits before the call returned, hence we
-   * can test which event actually happened. */
-  if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "connected to ap SSID: %s", wifi_config.sta.ssid);
-  } else if (bits & WIFI_FAIL_BIT) {
-    ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
-             wifi_config.sta.ssid, wifi_config.sta.password);
-  } else {
-    ESP_LOGE(TAG, "UNEXPECTED EVENT");
-  }
-
-  uint8_t base_mac[6];
-  // Get MAC address for WiFi station
-  esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
-  sprintf(mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", base_mac[0],
-          base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
-
-  // ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT,
-  // IP_EVENT_STA_GOT_IP, &event_handler));
-  // ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
-  // &event_handler)); vEventGroupDelete(s_wifi_event_group);
 }
 
 esp_netif_t *get_current_netif(void) { return esp_wifi_netif; }

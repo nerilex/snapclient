@@ -24,11 +24,7 @@
 #endif
 
 #include "nvs_flash.h"
-#include "wifi_interface.h"
-
-// Minimum ESP-IDF stuff only hardware abstraction stuff
-#include <wifi_provisioning.h>
-
+// #include "wifi_interface.h"
 #include "board.h"
 #include "es8388.h"
 #include "esp_netif.h"
@@ -40,6 +36,7 @@
 #include "lwip/sys.h"
 #include "mdns.h"
 #include "net_functions.h"
+#include "network_interface.h"
 
 // Web socket server
 // #include "websocket_if.h"
@@ -2532,20 +2529,24 @@ void app_main(void) {
     gpio_set_level(pin_config0.ws_io_num, 0);
   }
 
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-  eth_init();
-  // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
-  init_http_server_task("ETH_DEF");
-#else
-  // Enable and setup WIFI in station mode and connect to Access point setup in
-  // menu config or set up provisioning mode settable in menuconfig
-  wifi_init();
-  ESP_LOGI(TAG, "Connected to AP");
-  // http server for control operations and user interface
-  // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
-  init_http_server_task("WIFI_STA_DEF");
-#endif
+  /*
+  #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+      CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+    eth_init();
+    // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
+    init_http_server_task("ETH_DEF");
+  #else
+    // Enable and setup WIFI in station mode and connect to Access point setup
+  in
+    // menu config or set up provisioning mode settable in menuconfig
+    wifi_init();
+    ESP_LOGI(TAG, "Connected to AP");
+    // http server for control operations and user interface
+    // pass "WIFI_STA_DEF", "WIFI_AP_DEF", "ETH_DEF"
+    init_http_server_task("WIFI_STA_DEF");
+  #endif
+  */
+  network_init();
 
   // Enable websocket server
   //  ESP_LOGI(TAG, "Setup ws server");

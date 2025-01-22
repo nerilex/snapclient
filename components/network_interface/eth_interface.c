@@ -3,8 +3,6 @@
  *
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
-#include "eth_interface.h"
-
 #include <stdio.h>
 #include <string.h>
 
@@ -23,16 +21,11 @@
 #include "driver/spi_master.h"
 #endif
 
-static const char *TAG = "snapclient_eth_init";
+#include "network_interface.h"
 
-/* The event group allows multiple bits for each event, but we only care about
- * two events:
- * - we are connected to the AP with an IP
- * - we failed to connect after the maximum amount of retries */
-#define ETH_CONNECTED_BIT BIT0
-#define ETH_FAIL_BIT BIT1
+static const char *TAG = "ETH_IF";
 
-static EventGroupHandle_t s_eth_event_group;
+static uint8_t eth_port_cnt = 0;
 
 #if CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
 #define SPI_ETHERNETS_NUM CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
@@ -272,9 +265,10 @@ err:
 }
 #endif  // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 
-/** Original init function in the example */
-esp_err_t original_eth_init(esp_eth_handle_t *eth_handles_out[],
-                            uint8_t *eth_cnt_out) {
+/**
+ */
+static esp_err_t eth_init(esp_eth_handle_t *eth_handles_out[],
+                          uint8_t *eth_cnt_out) {
   esp_err_t ret = ESP_OK;
   esp_eth_handle_t *eth_handles = NULL;
   uint8_t eth_cnt = 0;
@@ -364,7 +358,6 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
       break;
     case ETHERNET_EVENT_DISCONNECTED:
       ESP_LOGI(TAG, "Ethernet Link Down");
-      xEventGroupSetBits(s_eth_event_group, ETH_FAIL_BIT);
       break;
     case ETHERNET_EVENT_START:
       ESP_LOGI(TAG, "Ethernet Started");
@@ -381,30 +374,35 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
 static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
                                  int32_t event_id, void *event_data) {
   ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-  const esp_netif_ip_info_t *ip_info = &event->ip_info;
 
-  ESP_LOGI(TAG, "Ethernet Got IP Address");
-  ESP_LOGI(TAG, "~~~~~~~~~~~");
-  ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
-  ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
-  ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
-  ESP_LOGI(TAG, "~~~~~~~~~~~");
+  for (int i = 0; i < eth_port_cnt; i++) {
+    char if_desc_str[10];
+    char num_str[3];
 
-  xEventGroupSetBits(s_eth_event_group, ETH_CONNECTED_BIT);
+    itoa(i, num_str, 10);
+    strcat(strcpy(if_desc_str, NETWORK_INTERFACE_DESC_ETH), num_str);
+
+    if (network_is_our_netif(if_desc_str, event->esp_netif)) {
+      const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+      ESP_LOGI(TAG, "Ethernet Got IP Address");
+      ESP_LOGI(TAG, "~~~~~~~~~~~");
+      ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
+      ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
+      ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
+      ESP_LOGI(TAG, "~~~~~~~~~~~");
+
+      break;
+    }
+  }
 }
 
 /** Init function that exposes to the main application */
-void eth_init(void) {
+void eth_start(void) {
   // Initialize Ethernet driver
-  uint8_t eth_port_cnt = 0;
   esp_eth_handle_t *eth_handles;
-  ESP_ERROR_CHECK(original_eth_init(&eth_handles, &eth_port_cnt));
 
-  // Initialize TCP/IP network interface aka the esp-netif (should be called
-  // only once in application)
-  ESP_ERROR_CHECK(esp_netif_init());
-  // Create default event loop that running in background
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  ESP_ERROR_CHECK(eth_init(&eth_handles, &eth_port_cnt));
 
   // Create instance(s) of esp-netif for Ethernet(s)
   if (eth_port_cnt == 1) {
@@ -429,7 +427,7 @@ void eth_init(void) {
     for (int i = 0; i < eth_port_cnt; i++) {
       itoa(i, num_str, 10);
       strcat(strcpy(if_key_str, "ETH_"), num_str);
-      strcat(strcpy(if_desc_str, "eth"), num_str);
+      strcat(strcpy(if_desc_str, NETWORK_INTERFACE_DESC_ETH), num_str);
       esp_netif_config.if_key = if_key_str;
       esp_netif_config.if_desc = if_desc_str;
       esp_netif_config.route_prio -= i * 5;
@@ -451,12 +449,4 @@ void eth_init(void) {
   for (int i = 0; i < eth_port_cnt; i++) {
     ESP_ERROR_CHECK(esp_eth_start(eth_handles[i]));
   }
-
-  /* Waiting until either the connection is established (ETH_CONNECTED_BIT) or
-   * connection failed for the maximum number of re-tries (ETH_FAIL_BIT). The
-   * bits are set by event_handler() (see above) */
-  s_eth_event_group = xEventGroupCreate();
-  //    EventBits_t bits =
-  xEventGroupWaitBits(s_eth_event_group, ETH_CONNECTED_BIT, pdFALSE, pdFALSE,
-                      portMAX_DELAY);
 }

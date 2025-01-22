@@ -12,13 +12,11 @@
 #include "esp_netif.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "mdns.h"
 #include "netdb.h"
-#include "wifi_interface.h"
 
 static const char *TAG = "NETF";
 
@@ -106,31 +104,31 @@ void sntp_cb(struct timeval *tv) {
   ESP_LOGI(TAG, "sntp_cb called :%s", strftime_buf);
 }
 
-void set_time_from_sntp() {
-  xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, false, true,
-                      portMAX_DELAY);
-  // ESP_LOGI(TAG, "clock %");
-  ESP_LOGI(TAG, "Initializing SNTP");
-  sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  sntp_setservername(0, CONFIG_SNTP_SERVER);
-  sntp_init();
-  // sntp_set_time_sync_notification_cb(sntp_cb);
-  setenv("TZ", SNTP_TIMEZONE, 1);
-  tzset();
-
-  time_t now = 0;
-  struct tm timeinfo = {0};
-  int retry = 0;
-  const int retry_count = 10;
-  while (timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count) {
-    ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry,
-             retry_count);
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-    time(&now);
-    localtime_r(&now, &timeinfo);
-  }
-  char strftime_buf[64];
-
-  strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-  ESP_LOGI(TAG, "The current date/time in UTC is: %s", strftime_buf);
-}
+// void set_time_from_sntp() {
+//   xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, false, true,
+//                       portMAX_DELAY);
+//   // ESP_LOGI(TAG, "clock %");
+//   ESP_LOGI(TAG, "Initializing SNTP");
+//   sntp_setoperatingmode(SNTP_OPMODE_POLL);
+//   sntp_setservername(0, CONFIG_SNTP_SERVER);
+//   sntp_init();
+//   // sntp_set_time_sync_notification_cb(sntp_cb);
+//   setenv("TZ", SNTP_TIMEZONE, 1);
+//   tzset();
+//
+//   time_t now = 0;
+//   struct tm timeinfo = {0};
+//   int retry = 0;
+//   const int retry_count = 10;
+//   while (timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count) {
+//     ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry,
+//              retry_count);
+//     vTaskDelay(2000 / portTICK_PERIOD_MS);
+//     time(&now);
+//     localtime_r(&now, &timeinfo);
+//   }
+//   char strftime_buf[64];
+//
+//   strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+//   ESP_LOGI(TAG, "The current date/time in UTC is: %s", strftime_buf);
+// }
