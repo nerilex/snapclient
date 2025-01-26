@@ -11,13 +11,16 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/projdefs.h"
 #include "freertos/task.h"
 #include "hal/gpio_types.h"
+#include "lwip/ip_addr.h"
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "eth_interface.h"
@@ -451,7 +454,6 @@ static void http_get_task(void *pvParameters) {
   codec_type_t codec = NONE;
   snapcastSetting_t scSet;
   pcm_chunk_message_t *pcmData = NULL;
-  ip_addr_t remote_ip;
   uint16_t remotePort = 0;
   int rc1 = ERR_OK, rc2 = ERR_OK;
   struct netbuf *firstNetBuf = NULL;
@@ -514,7 +516,32 @@ static void http_get_task(void *pvParameters) {
         free(serverSettingsString);
         serverSettingsString = NULL;
       }
+
+      if (lwipNetconn != NULL) {
+        netconn_delete(lwipNetconn);
+        lwipNetconn = NULL;
+      }
     }
+
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+    esp_netif_t *eth_netif =
+        network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH);
+    esp_netif_t *sta_netif =
+        network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA);
+    while (1) {
+      bool ethUp = network_is_netif_up(eth_netif);
+      bool staUp = network_is_netif_up(sta_netif);
+
+      if (ethUp && staUp) {
+        break;
+      }
+
+      ESP_LOGI(TAG, "Wait for WiFi and Eth");
+
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
 
 #if SNAPCAST_SERVER_USE_MDNS
     // Find snapcast server
@@ -535,21 +562,42 @@ static void http_get_task(void *pvParameters) {
       }
     }
 
-    mdns_ip_addr_t *a = r->addr;
-    if (a) {
-      ip_addr_copy(remote_ip, (a->addr));
-      remote_ip.type = a->addr.type;
-      remotePort = r->port;
-      ESP_LOGI(TAG, "Found %s:%d", ipaddr_ntoa(&remote_ip), remotePort);
+    ESP_LOGI(TAG, "\n~~~~~~~~~~ MDNS Query success ~~~~~~~~~~");
+    mdns_print_results(r);
+    ESP_LOGI(TAG, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
 
-      mdns_query_results_free(r);
-    } else {
+    ip_addr_t remote_ip;
+    mdns_result_t *re = r;
+    while (re) {
+      mdns_ip_addr_t *a = re->addr;
+#if CONFIG_SNAPCLIENT_CONNECT_IPV6
+      if (a->addr.type == IPADDR_TYPE_V6) {
+        break;
+      }
+#else
+      if (a->addr.type == IPADDR_TYPE_V4) {
+        break;
+      }
+#endif
+
+      re = re->next;
+    }
+
+    if (!re) {
       mdns_query_results_free(r);
 
-      ESP_LOGW(TAG, "No IP found in MDNS query");
+      ESP_LOGW(TAG, "didn't find any valid IP in MDNS query");
 
       continue;
     }
+
+    ip_addr_copy(remote_ip, re->addr->addr);
+    // remote_ip.type = a->addr.type;
+    remotePort = r->port;
+
+    mdns_query_results_free(r);
+
+    ESP_LOGI(TAG, "Found %s:%d", ipaddr_ntoa(&remote_ip), remotePort);
 #else
     // configure a failsafe snapserver according to CONFIG values
     struct sockaddr_in servaddr;
@@ -566,19 +614,122 @@ static void http_get_task(void *pvParameters) {
              ipaddr_ntoa(&remote_ip), remotePort);
 #endif
 
-    if (lwipNetconn != NULL) {
-      netconn_delete(lwipNetconn);
-      lwipNetconn = NULL;
+    ip_addr_t ipAddr;
+    if (remote_ip.type == IPADDR_TYPE_V4) {
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      esp_netif_ip_info_t eth_ip_info;
+      esp_netif_get_ip_info(eth_netif, &eth_ip_info);
+#endif
+      esp_netif_ip_info_t sta_ip_info;
+      esp_netif_get_ip_info(sta_netif, &sta_ip_info);
+
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      esp_netif_ip_info_t *ip_info = &eth_ip_info;
+#else
+      esp_netif_ip_info_t *ip_info = &sta_ip_info;
+#endif
+
+      ip_addr_t _ipAddr = IPADDR4_INIT(ip_info->ip.addr);
+
+      ipAddr = _ipAddr;
+
+      char str[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &(ipAddr.u_addr.ip4.addr), str, INET_ADDRSTRLEN);
+
+      ESP_LOGI(TAG, "IP4 %s", str);
+    } else if (remote_ip.type == IPADDR_TYPE_V6) {
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      esp_netif_ip6_info_t eth_ip_info;
+      esp_netif_get_ip6_linklocal(eth_netif, &eth_ip_info.ip);
+#endif
+      esp_netif_ip6_info_t sta_ip_info;
+      esp_netif_get_ip6_linklocal(eth_netif, &sta_ip_info.ip);
+
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      esp_netif_ip6_info_t *ip_info = &eth_ip_info;
+#else
+      esp_netif_ip6_info_t *ip_info = &sta_ip_info;
+#endif
+      ip_addr_t _ipAddr =
+          IPADDR6_INIT(ip_info->ip.addr[0], ip_info->ip.addr[1],
+                       ip_info->ip.addr[2], ip_info->ip.addr[3]);
+      ipAddr = _ipAddr;
+
+      char str[INET6_ADDRSTRLEN];
+      // inet_ntop(AF_INET6, &(ipAddr.u_addr.ip6.addr), str, INET6_ADDRSTRLEN);
+      inet_ntop(AF_INET6, &(ip_info->ip.addr), str, INET6_ADDRSTRLEN);
+
+      //    ESP_LOGI(TAG, "Got IPv6 event: address: " IPV6STR,
+      //    IPV62STR(ip_info->ip));
+
+      //			ESP_LOGI(TAG, "IP6 %s", str);
+    } else {
+      ESP_LOGI(TAG, "wrong remote IP address type %u", remote_ip.type);
+
+      continue;
     }
 
-    lwipNetconn = netconn_new(NETCONN_TCP);
+    //    /* Create a socket */
+    //    int sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_IPV6);
+    //    if (sock < 0) {
+    //        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+    //    }
+    //    ESP_LOGI(TAG, "Socket created");
+    //
+    //    esp_netif_ip6_info_t ip;
+    //    memset(&ip, 0, sizeof(esp_netif_ip6_info_t));
+    //    esp_netif_get_ip6_linklocal(eth_netif, &ip.ip);
+    //
+    //    struct sockaddr_in6 addr;
+    //    memset(&addr, 0, sizeof(addr));
+    //    addr.sin6_family = AF_INET6;
+    //    addr.sin6_port = htons(0);
+    //    memcpy(&addr.sin6_addr.un.u32_addr, &ip.ip.addr, sizeof(ip.ip.addr));
+    //
+    //    int ret = bind(sock, (struct sockaddr *)&addr, sizeof(addr));
+    //    if (ret < 0) {
+    //        ESP_LOGE(TAG, "Unable to bind socket: errno %d", errno);
+    //    }
+    //
+    //    /* Connect to the host by the network interface */
+    //    struct sockaddr_in6 destAddr;
+    //    memcpy(&destAddr.sin6_addr.un.u32_addr, &remote_ip.u_addr.ip6.addr,
+    //    sizeof(remote_ip.u_addr.ip6.addr)); destAddr.sin6_family = AF_INET6;
+    //    destAddr.sin6_port = htons(remotePort);
+    //    ret = connect(sock, (struct sockaddr *)&destAddr, sizeof(destAddr));
+    //    if (ret != 0) {
+    //        ESP_LOGE(TAG, "Socket unable to connect: errno %d",errno);
+    //    }
+    //    ESP_LOGI(TAG, "Successfully connected");
+    //
+    //
+
+    if (remote_ip.type == IPADDR_TYPE_V4) {
+      lwipNetconn = netconn_new(NETCONN_TCP);
+
+      ESP_LOGI(TAG, "netconn using IPv4");
+    } else if (remote_ip.type == IPADDR_TYPE_V6) {
+      lwipNetconn = netconn_new(NETCONN_TCP_IPV6);
+
+      ESP_LOGI(TAG, "netconn using IPv6");
+    } else {
+      ESP_LOGW(TAG, "remote IP has unsupported IP type");
+
+      continue;
+    }
+
     if (lwipNetconn == NULL) {
       ESP_LOGE(TAG, "can't create netconn");
 
       continue;
     }
 
-    rc1 = netconn_bind(lwipNetconn, IPADDR_ANY, 0);
+    //    rc1 = netconn_bind(lwipNetconn, IP6_ADDR_ANY, 0);
+    rc1 = netconn_bind(lwipNetconn, &ipAddr, 0);
     if (rc1 != ERR_OK) {
       ESP_LOGE(TAG, "can't bind local IP");
     }
@@ -605,17 +756,22 @@ static void http_get_task(void *pvParameters) {
       return;
     }
 
-    char mac_address[18];
     uint8_t base_mac[6];
     // Get MAC address for WiFi station
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+    char eth_mac_address[18];
+
     esp_read_mac(base_mac, ESP_MAC_ETH);
-#else
-    esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
+    sprintf(eth_mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", base_mac[0],
+            base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
+    ESP_LOGI(TAG, "eth mac: %s", eth_mac_address);
 #endif
+    char mac_address[18];
+    esp_read_mac(base_mac, ESP_MAC_WIFI_STA);
     sprintf(mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", base_mac[0],
             base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
+    ESP_LOGI(TAG, "sta mac: %s", mac_address);
 
     now = esp_timer_get_time();
 

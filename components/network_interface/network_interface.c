@@ -34,6 +34,16 @@
 
 static const char *TAG = "NET_IF";
 
+/* types of ipv6 addresses to be displayed on ipv6 events */
+const char *ipv6_addr_types_to_str[6] = {
+    "ESP_IP6_ADDR_IS_UNKNOWN",      "ESP_IP6_ADDR_IS_GLOBAL",
+    "ESP_IP6_ADDR_IS_LINK_LOCAL",   "ESP_IP6_ADDR_IS_SITE_LOCAL",
+    "ESP_IP6_ADDR_IS_UNIQUE_LOCAL", "ESP_IP6_ADDR_IS_IPV4_MAPPED_IPV6"};
+
+static bool netif_desc_matches_with(esp_netif_t *netif, void *ctx) {
+  return strcmp(ctx, esp_netif_get_desc(netif)) == 0;
+}
+
 /**
  * @brief Checks the netif description if it contains specified prefix.
  * All netifs created withing common connect component are prefixed with the
@@ -41,6 +51,16 @@ static const char *TAG = "NET_IF";
  */
 bool network_is_our_netif(const char *prefix, esp_netif_t *netif) {
   return strncmp(prefix, esp_netif_get_desc(netif), strlen(prefix) - 1) == 0;
+}
+
+/**
+ */
+esp_netif_t *network_get_netif_from_desc(const char *desc) {
+  return esp_netif_find_if(netif_desc_matches_with, (void *)desc);
+}
+
+bool network_is_netif_up(esp_netif_t *esp_netif) {
+  return esp_netif_is_netif_up(esp_netif);
 }
 
 void network_init(void) {

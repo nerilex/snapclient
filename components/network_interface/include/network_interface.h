@@ -13,8 +13,15 @@
 #include "esp_netif.h"
 
 #define NETWORK_INTERFACE_DESC_STA "sta"
-#define NETWORK_INTERFACE_DESC_ETH "eth"
+#define NETWORK_INTERFACE_DESC_ETH \
+  "eth"  // this is the default value created by ESP_NETIF_DEFAULT_ETH();
+         // if more than 1 Ethernet interface is configured, they are appended
+         // with numbers starting from 0, e.g.: eth0, eth1, ...
 
+extern char *ipv6_addr_types_to_str[6];
+
+esp_netif_t *network_get_netif_from_desc(const char *desc);
+bool network_is_netif_up(esp_netif_t *esp_netif);
 bool network_is_our_netif(const char *prefix, esp_netif_t *netif);
 void network_init(void);
 

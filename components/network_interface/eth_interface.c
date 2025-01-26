@@ -347,6 +347,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
   uint8_t mac_addr[6] = {0};
   /* we can get the ethernet driver handle from event data */
   esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+  esp_netif_t *netif = (esp_netif_t *)arg;
 
   switch (event_id) {
     case ETHERNET_EVENT_CONNECTED:
@@ -355,6 +356,9 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
       ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
                mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
                mac_addr[5]);
+
+      ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(netif));
+
       break;
     case ETHERNET_EVENT_DISCONNECTED:
       ESP_LOGI(TAG, "Ethernet Link Down");
@@ -397,10 +401,25 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
   }
 }
 
+static void eth_on_got_ipv6(void *arg, esp_event_base_t event_base,
+                            int32_t event_id, void *event_data) {
+  ip_event_got_ip6_t *event = (ip_event_got_ip6_t *)event_data;
+  if (!network_is_our_netif(NETWORK_INTERFACE_DESC_ETH, event->esp_netif)) {
+    return;
+  }
+  esp_ip6_addr_type_t ipv6_type =
+      esp_netif_ip6_get_addr_type(&event->ip6_info.ip);
+  ESP_LOGI(TAG,
+           "Got IPv6 event: Interface \"%s\" address: " IPV6STR ", type: %s",
+           esp_netif_get_desc(event->esp_netif), IPV62STR(event->ip6_info.ip),
+           ipv6_addr_types_to_str[ipv6_type]);
+}
+
 /** Init function that exposes to the main application */
 void eth_start(void) {
   // Initialize Ethernet driver
   esp_eth_handle_t *eth_handles;
+  esp_netif_t *eth_netif;
 
   ESP_ERROR_CHECK(eth_init(&eth_handles, &eth_port_cnt));
 
@@ -409,7 +428,7 @@ void eth_start(void) {
     // Use ESP_NETIF_DEFAULT_ETH when just one Ethernet interface is used and
     // you don't need to modify default esp-netif configuration parameters.
     esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
-    esp_netif_t *eth_netif = esp_netif_new(&cfg);
+    eth_netif = esp_netif_new(&cfg);
     // Attach Ethernet driver to TCP/IP stack
     ESP_ERROR_CHECK(
         esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handles[0])));
@@ -431,7 +450,7 @@ void eth_start(void) {
       esp_netif_config.if_key = if_key_str;
       esp_netif_config.if_desc = if_desc_str;
       esp_netif_config.route_prio -= i * 5;
-      esp_netif_t *eth_netif = esp_netif_new(&cfg_spi);
+      eth_netif = esp_netif_new(&cfg_spi);
 
       // Attach Ethernet driver to TCP/IP stack
       ESP_ERROR_CHECK(
@@ -441,9 +460,11 @@ void eth_start(void) {
 
   // Register user defined event handers
   ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID,
-                                             &eth_event_handler, NULL));
+                                             &eth_event_handler, eth_netif));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                              &got_ip_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6,
+                                             &eth_on_got_ipv6, NULL));
 
   // Start Ethernet driver state machine
   for (int i = 0; i < eth_port_cnt; i++) {

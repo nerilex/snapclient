@@ -5,6 +5,12 @@ menu "Snapclient Configuration"
         help
             Use mDNS to look for the snapserver to connect to on the local network.
 
+    config SNAPCLIENT_CONNECT_IPV6
+        bool "use IPv6"
+        default false
+        help
+            Use IPv6 to connect to snapserver
+
     config SNAPSERVER_HOST
         string "Snapserver host"
         default "192.168.1.158"

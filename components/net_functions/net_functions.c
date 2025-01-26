@@ -33,33 +33,32 @@ void net_mdns_register(const char *clientname) {
   ESP_ERROR_CHECK(mdns_service_add(NULL, "_http", "_tcp", 8032, NULL, 0));
 }
 
-void mdns_print_results(mdns_result_t *results) {
+void mdns_print_results(const mdns_result_t *results) {
   mdns_result_t *r = results;
   mdns_ip_addr_t *a = NULL;
   int i = 1, t;
+
   while (r) {
-    //      printf ("%d: Interface: %s, Type: %s\n", i++, if_str[r->tcpip_if],
-    //              ip_protocol_str[r->ip_protocol]);
-    printf("%d: Type: %s\n", i++, ip_protocol_str[r->ip_protocol]);
+    ESP_LOGI(TAG, "Interface: %s", esp_netif_get_desc(r->esp_netif));
+    ESP_LOGI(TAG, "Type: %s", ip_protocol_str[r->ip_protocol]);
     if (r->instance_name) {
-      printf("  PTR : %s\n", r->instance_name);
+      ESP_LOGI(TAG, "  PTR : %s", r->instance_name);
     }
     if (r->hostname) {
-      printf("  SRV : %s.local:%u\n", r->hostname, r->port);
+      ESP_LOGI(TAG, "  SRV : %s.local:%u", r->hostname, r->port);
     }
     if (r->txt_count) {
-      printf("  TXT : [%u] ", r->txt_count);
+      ESP_LOGI(TAG, "  TXT : [%u] ", r->txt_count);
       for (t = 0; t < r->txt_count; t++) {
-        printf("%s=%s; ", r->txt[t].key, r->txt[t].value);
+        ESP_LOGI(TAG, "%s=%s; ", r->txt[t].key, r->txt[t].value);
       }
-      printf("\n");
     }
     a = r->addr;
     while (a) {
       if (a->addr.type == IPADDR_TYPE_V6) {
-        printf("  AAAA: " IPV6STR "\n", IPV62STR(a->addr.u_addr.ip6));
+        ESP_LOGI(TAG, "  AAAA: " IPV6STR, IPV62STR(a->addr.u_addr.ip6));
       } else {
-        printf("  A   : " IPSTR "\n", IP2STR(&(a->addr.u_addr.ip4)));
+        ESP_LOGI(TAG, "  A   : " IPSTR, IP2STR(&(a->addr.u_addr.ip4)));
       }
       a = a->next;
     }
