@@ -432,6 +432,9 @@ esp_err_t audio_set_mute(bool mute) {
   }
 }
 
+#define INTERFACE_ETH 0
+#define INTERFACE_STA 1
+
 /**
  *
  */
@@ -463,6 +466,8 @@ static void http_get_task(void *pvParameters) {
   char *codecString = NULL;
   char *codecPayload = NULL;
   char *serverSettingsString = NULL;
+  int connected_interface = -1;
+  esp_netif_t *netif = NULL;
 
   // create a timer to send time sync messages every x µs
   esp_timer_create(&tSyncArgs, &timeSyncMessageTimer);
@@ -475,6 +480,8 @@ static void http_get_task(void *pvParameters) {
   while (1) {
     // do some house keeping
     {
+      connected_interface = -1;
+
       received_header = false;
 
       timeout = FAST_SYNC_LATENCY_BUF;
@@ -533,11 +540,11 @@ static void http_get_task(void *pvParameters) {
       bool ethUp = network_is_netif_up(eth_netif);
       bool staUp = network_is_netif_up(sta_netif);
 
-      if (ethUp && staUp) {
+      if (ethUp || staUp) {
         break;
       }
 
-      ESP_LOGI(TAG, "Wait for WiFi and Eth");
+      ESP_LOGI(TAG, "Wait for WiFi or Eth");
 
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -572,10 +579,12 @@ static void http_get_task(void *pvParameters) {
       mdns_ip_addr_t *a = re->addr;
 #if CONFIG_SNAPCLIENT_CONNECT_IPV6
       if (a->addr.type == IPADDR_TYPE_V6) {
+        netif = re->esp_netif;
         break;
       }
 #else
       if (a->addr.type == IPADDR_TYPE_V4) {
+        netif = re->esp_netif;
         break;
       }
 #endif
@@ -616,22 +625,23 @@ static void http_get_task(void *pvParameters) {
 
     ip_addr_t ipAddr;
     if (remote_ip.type == IPADDR_TYPE_V4) {
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      esp_netif_ip_info_t eth_ip_info;
-      esp_netif_get_ip_info(eth_netif, &eth_ip_info);
-#endif
-      esp_netif_ip_info_t sta_ip_info;
-      esp_netif_get_ip_info(sta_netif, &sta_ip_info);
+      esp_netif_ip_info_t ip_info;
+      memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
 
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      esp_netif_ip_info_t *ip_info = &eth_ip_info;
-#else
-      esp_netif_ip_info_t *ip_info = &sta_ip_info;
-#endif
+      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
+      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      //       if (network_is_netif_up(
+      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) ) {
+      //         esp_netif_get_ip_info(eth_netif, &ip_info);
+      //       }
+      //       else
+      // #endif
+      //       {
+      // if (network_is_netif_up( netif ) )
+      { esp_netif_get_ip_info(netif, &ip_info); }
+      //      }
 
-      ip_addr_t _ipAddr = IPADDR4_INIT(ip_info->ip.addr);
+      ip_addr_t _ipAddr = IPADDR4_INIT(ip_info.ip.addr);
 
       ipAddr = _ipAddr;
 
@@ -640,28 +650,31 @@ static void http_get_task(void *pvParameters) {
 
       ESP_LOGI(TAG, "IP4 %s", str);
     } else if (remote_ip.type == IPADDR_TYPE_V6) {
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      esp_netif_ip6_info_t eth_ip_info;
-      esp_netif_get_ip6_linklocal(eth_netif, &eth_ip_info.ip);
-#endif
-      esp_netif_ip6_info_t sta_ip_info;
-      esp_netif_get_ip6_linklocal(eth_netif, &sta_ip_info.ip);
+      esp_netif_ip6_info_t ip_info;
+      memset(&ip_info, 0, sizeof(esp_netif_ip6_info_t));
 
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      esp_netif_ip6_info_t *ip_info = &eth_ip_info;
-#else
-      esp_netif_ip6_info_t *ip_info = &sta_ip_info;
-#endif
-      ip_addr_t _ipAddr =
-          IPADDR6_INIT(ip_info->ip.addr[0], ip_info->ip.addr[1],
-                       ip_info->ip.addr[2], ip_info->ip.addr[3]);
+      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
+      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      //       if (network_is_netif_up(
+      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) ) {
+      //         esp_netif_get_ip6_linklocal(eth_netif, &ip_info.ip);
+      //       }
+      //       else
+      // #endif
+      //       {
+      //         if (network_is_netif_up(
+      //         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA)) ) {
+      esp_netif_get_ip6_linklocal(netif, &ip_info.ip);
+      //        }
+      //      }
+
+      ip_addr_t _ipAddr = IPADDR6_INIT(ip_info.ip.addr[0], ip_info.ip.addr[1],
+                                       ip_info.ip.addr[2], ip_info.ip.addr[3]);
       ipAddr = _ipAddr;
 
       char str[INET6_ADDRSTRLEN];
       // inet_ntop(AF_INET6, &(ipAddr.u_addr.ip6.addr), str, INET6_ADDRSTRLEN);
-      inet_ntop(AF_INET6, &(ip_info->ip.addr), str, INET6_ADDRSTRLEN);
+      inet_ntop(AF_INET6, &(ip_info.ip.addr), str, INET6_ADDRSTRLEN);
 
       //    ESP_LOGI(TAG, "Got IPv6 event: address: " IPV6STR,
       //    IPV62STR(ip_info->ip));
@@ -672,41 +685,6 @@ static void http_get_task(void *pvParameters) {
 
       continue;
     }
-
-    //    /* Create a socket */
-    //    int sock = socket(AF_INET6, SOCK_STREAM, IPPROTO_IPV6);
-    //    if (sock < 0) {
-    //        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
-    //    }
-    //    ESP_LOGI(TAG, "Socket created");
-    //
-    //    esp_netif_ip6_info_t ip;
-    //    memset(&ip, 0, sizeof(esp_netif_ip6_info_t));
-    //    esp_netif_get_ip6_linklocal(eth_netif, &ip.ip);
-    //
-    //    struct sockaddr_in6 addr;
-    //    memset(&addr, 0, sizeof(addr));
-    //    addr.sin6_family = AF_INET6;
-    //    addr.sin6_port = htons(0);
-    //    memcpy(&addr.sin6_addr.un.u32_addr, &ip.ip.addr, sizeof(ip.ip.addr));
-    //
-    //    int ret = bind(sock, (struct sockaddr *)&addr, sizeof(addr));
-    //    if (ret < 0) {
-    //        ESP_LOGE(TAG, "Unable to bind socket: errno %d", errno);
-    //    }
-    //
-    //    /* Connect to the host by the network interface */
-    //    struct sockaddr_in6 destAddr;
-    //    memcpy(&destAddr.sin6_addr.un.u32_addr, &remote_ip.u_addr.ip6.addr,
-    //    sizeof(remote_ip.u_addr.ip6.addr)); destAddr.sin6_family = AF_INET6;
-    //    destAddr.sin6_port = htons(remotePort);
-    //    ret = connect(sock, (struct sockaddr *)&destAddr, sizeof(destAddr));
-    //    if (ret != 0) {
-    //        ESP_LOGE(TAG, "Socket unable to connect: errno %d",errno);
-    //    }
-    //    ESP_LOGI(TAG, "Successfully connected");
-    //
-    //
 
     if (remote_ip.type == IPADDR_TYPE_V4) {
       lwipNetconn = netconn_new(NETCONN_TCP);
@@ -728,7 +706,6 @@ static void http_get_task(void *pvParameters) {
       continue;
     }
 
-    //    rc1 = netconn_bind(lwipNetconn, IP6_ADDR_ANY, 0);
     rc1 = netconn_bind(lwipNetconn, &ipAddr, 0);
     if (rc1 != ERR_OK) {
       ESP_LOGE(TAG, "can't bind local IP");
@@ -748,7 +725,7 @@ static void http_get_task(void *pvParameters) {
       continue;
     }
 
-    ESP_LOGI(TAG, "netconn connected");
+    ESP_LOGI(TAG, "netconn connected using %s", network_get_ifkey(netif));
 
     if (reset_latency_buffer() < 0) {
       ESP_LOGE(TAG,
@@ -777,7 +754,7 @@ static void http_get_task(void *pvParameters) {
 
     // init base message
     base_message_rx.type = SNAPCAST_MESSAGE_HELLO;
-    base_message_rx.id = id_counter++;
+    base_message_rx.id = 0;  // id_counter++;
     base_message_rx.refersTo = 0x0000;
     base_message_rx.sent.sec = now / 1000000;
     base_message_rx.sent.usec = now - base_message_rx.sent.sec * 1000000;
@@ -862,6 +839,7 @@ static void http_get_task(void *pvParameters) {
     firstNetBuf = NULL;
 
     while (1) {
+      //      ESP_LOGI(TAG, "test");
       rc2 = netconn_recv(lwipNetconn, &firstNetBuf);
       if (rc2 != ERR_OK) {
         if (rc2 == ERR_CONN) {
@@ -878,6 +856,31 @@ static void http_get_task(void *pvParameters) {
         }
         continue;
       }
+
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+      if (scSet.muted) {
+        esp_netif_t *eth_netif =
+            network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH);
+
+        if (netif != eth_netif) {
+          bool ethUp = network_is_netif_up(eth_netif);
+
+          if (ethUp) {
+            netconn_close(lwipNetconn);
+
+            if (firstNetBuf != NULL) {
+              netbuf_delete(firstNetBuf);
+
+              firstNetBuf = NULL;
+            }
+
+            // restart and try to reconnect using preferred interface ETH
+            break;
+          }
+        }
+      }
+#endif
 
       // now parse the data
       netbuf_first(firstNetBuf);

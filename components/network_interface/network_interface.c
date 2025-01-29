@@ -59,6 +59,10 @@ esp_netif_t *network_get_netif_from_desc(const char *desc) {
   return esp_netif_find_if(netif_desc_matches_with, (void *)desc);
 }
 
+const char *network_get_ifkey(esp_netif_t *esp_netif) {
+  return esp_netif_get_ifkey(esp_netif);
+}
+
 bool network_is_netif_up(esp_netif_t *esp_netif) {
   return esp_netif_is_netif_up(esp_netif);
 }
