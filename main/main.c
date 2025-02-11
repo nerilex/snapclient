@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "driver/timer_types_legacy.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -17,10 +18,13 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/portmacro.h"
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
 #include "hal/gpio_types.h"
+#include "idf_additions.h"
 #include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "eth_interface.h"
@@ -82,7 +86,7 @@ static FLAC__StreamDecoder *flacDecoder = NULL;
 
 const char *VERSION_STRING = "0.0.3";
 
-#define HTTP_TASK_PRIORITY 9
+#define HTTP_TASK_PRIORITY 5
 #define HTTP_TASK_CORE_ID tskNO_AFFINITY
 
 #define OTA_TASK_PRIORITY 6
@@ -112,6 +116,8 @@ static const char *TAG = "SC";
 
 // static QueueHandle_t playerChunkQueueHandle = NULL;
 SemaphoreHandle_t timeSyncSemaphoreHandle = NULL;
+
+SemaphoreHandle_t idCounterSemaphoreHandle = NULL;
 
 #if CONFIG_USE_DSP_PROCESSOR
 #if CONFIG_SNAPCLIENT_DSP_FLOW_STEREO
@@ -176,21 +182,7 @@ void time_sync_msg_cb(void *args) {
   base_message_t base_message_tx;
   //  struct timeval now;
   int64_t now;
-  // time_message_t time_message_tx = {{0, 0}};
   int rc1;
-
-  // causes kernel panic, which shouldn't happen though?
-  // Isn't it called from timer task instead of ISR?
-  // xSemaphoreGive(timeSyncSemaphoreHandle);
-
-  //  result = gettimeofday(&now, NULL);
-  ////  ESP_LOGI(TAG, "time of day: %d", (int32_t)now.tv_sec +
-  ///(int32_t)now.tv_usec);
-  //  if (result) {
-  //    ESP_LOGI(TAG, "Failed to gettimeofday");
-  //
-  //    return;
-  //  }
 
   uint8_t *p_pkt = (uint8_t *)malloc(BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
   if (p_pkt == NULL) {
@@ -205,7 +197,11 @@ void time_sync_msg_cb(void *args) {
   memset(p_pkt, 0, BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE);
 
   base_message_tx.type = SNAPCAST_MESSAGE_TIME;
+
+  xSemaphoreTake(idCounterSemaphoreHandle, portMAX_DELAY);
   base_message_tx.id = id_counter++;
+  xSemaphoreGive(idCounterSemaphoreHandle);
+
   base_message_tx.refersTo = 0;
   base_message_tx.received.sec = 0;
   base_message_tx.received.usec = 0;
@@ -221,16 +217,6 @@ void time_sync_msg_cb(void *args) {
     return;
   }
 
-  //  memset(&time_message_tx, 0, sizeof(time_message_tx));
-  //  result = time_message_serialize(&time_message_tx,
-  //  &p_pkt[BASE_MESSAGE_SIZE],
-  //                                  TIME_MESSAGE_SIZE);
-  //  if (result) {
-  //    ESP_LOGI(TAG, "Failed to serialize time message");
-  //
-  //    return;
-  //  }
-
   rc1 = netconn_write(lwipNetconn, p_pkt, BASE_MESSAGE_SIZE + TIME_MESSAGE_SIZE,
                       NETCONN_NOCOPY);
   if (rc1 != ERR_OK) {
@@ -241,12 +227,8 @@ void time_sync_msg_cb(void *args) {
 
   free(p_pkt);
 
-  //  ESP_LOGI(TAG, "%s: sent time sync message", __func__);
-
-  //  xSemaphoreGiveFromISR(timeSyncSemaphoreHandle, &xHigherPriorityTaskWoken);
-  //  if (xHigherPriorityTaskWoken) {
-  //    portYIELD_FROM_ISR();
-  //  }
+  // ESP_LOGI(TAG, "%s: sent time sync message, %u", __func__,
+  // base_message_tx.id);
 }
 
 /**
@@ -447,6 +429,7 @@ static void http_get_task(void *pvParameters) {
   int result;
   int64_t now, trx, tdif, ttx;
   time_message_t time_message_rx = {{0, 0}};
+  client_info_t clientInfo = {0, 0};
   int64_t tmpDiffToServer;
   int64_t lastTimeSync = 0;
   esp_timer_handle_t timeSyncMessageTimer = NULL;
@@ -471,6 +454,13 @@ static void http_get_task(void *pvParameters) {
   // create a timer to send time sync messages every x µs
   esp_timer_create(&tSyncArgs, &timeSyncMessageTimer);
 
+  idCounterSemaphoreHandle = xSemaphoreCreateMutex();
+  if (idCounterSemaphoreHandle == NULL) {
+    ESP_LOGE(TAG, "can't create id Counter Semaphore");
+
+    return;
+  }
+
 #if CONFIG_SNAPCLIENT_USE_MDNS
   ESP_LOGI(TAG, "Enable mdns");
   mdns_init();
@@ -479,13 +469,15 @@ static void http_get_task(void *pvParameters) {
   while (1) {
     // do some house keeping
     {
+      esp_timer_stop(timeSyncMessageTimer);
+
       connected_interface = -1;
-
       received_header = false;
-
       timeout = FAST_SYNC_LATENCY_BUF;
 
-      esp_timer_stop(timeSyncMessageTimer);
+      xSemaphoreTake(idCounterSemaphoreHandle, portMAX_DELAY);
+      id_counter = 0;
+      xSemaphoreGive(idCounterSemaphoreHandle);
 
       if (opusDecoder != NULL) {
         opus_decoder_destroy(opusDecoder);
@@ -539,7 +531,15 @@ static void http_get_task(void *pvParameters) {
       bool ethUp = network_is_netif_up(eth_netif);
       bool staUp = network_is_netif_up(sta_netif);
 
-      if (ethUp || staUp) {
+      if (ethUp) {
+        netif = eth_netif;
+
+        break;
+      }
+
+      if (staUp) {
+        netif = sta_netif;
+
         break;
       }
 
@@ -607,92 +607,97 @@ static void http_get_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Found %s:%d", ipaddr_ntoa(&remote_ip), remotePort);
 #else
-    // configure a failsafe snapserver according to CONFIG values
-    struct sockaddr_in servaddr;
+    ip_addr_t remote_ip;
 
-    servaddr.sin_family = AF_INET;
-    inet_pton(AF_INET, SNAPCAST_SERVER_HOST, &(servaddr.sin_addr.s_addr));
-    servaddr.sin_port = htons(SNAPCAST_SERVER_PORT);
+    if (ipaddr_aton(SNAPCAST_SERVER_HOST, &remote_ip) == 0) {
+      ESP_LOGE(TAG, "can't convert static server adress to numeric");
+      continue;
+    }
 
-    inet_pton(AF_INET, SNAPCAST_SERVER_HOST, &(remote_ip.u_addr.ip4.addr));
-    remote_ip.type = IPADDR_TYPE_V4;
     remotePort = SNAPCAST_SERVER_PORT;
 
     ESP_LOGI(TAG, "try connecting to static configuration %s:%d",
              ipaddr_ntoa(&remote_ip), remotePort);
 #endif
 
-    ip_addr_t ipAddr;
-    if (remote_ip.type == IPADDR_TYPE_V4) {
-      esp_netif_ip_info_t ip_info;
-      memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
-
-      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
-      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      //       if (network_is_netif_up(
-      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) ) {
-      //         esp_netif_get_ip_info(eth_netif, &ip_info);
-      //       }
-      //       else
-      // #endif
-      //       {
-      // if (network_is_netif_up( netif ) )
-      { esp_netif_get_ip_info(netif, &ip_info); }
-      //      }
-
-      ip_addr_t _ipAddr = IPADDR4_INIT(ip_info.ip.addr);
-
-      ipAddr = _ipAddr;
-
-      char str[INET_ADDRSTRLEN];
-      inet_ntop(AF_INET, &(ipAddr.u_addr.ip4.addr), str, INET_ADDRSTRLEN);
-
-      ESP_LOGI(TAG, "IP4 %s", str);
-    } else if (remote_ip.type == IPADDR_TYPE_V6) {
-      esp_netif_ip6_info_t ip_info;
-      memset(&ip_info, 0, sizeof(esp_netif_ip6_info_t));
-
-      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
-      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-      //       if (network_is_netif_up(
-      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) ) {
-      //         esp_netif_get_ip6_linklocal(eth_netif, &ip_info.ip);
-      //       }
-      //       else
-      // #endif
-      //       {
-      //         if (network_is_netif_up(
-      //         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA)) ) {
-      esp_netif_get_ip6_linklocal(netif, &ip_info.ip);
-      //        }
-      //      }
-
-      ip_addr_t _ipAddr = IPADDR6_INIT(ip_info.ip.addr[0], ip_info.ip.addr[1],
-                                       ip_info.ip.addr[2], ip_info.ip.addr[3]);
-      ipAddr = _ipAddr;
-
-      char str[INET6_ADDRSTRLEN];
-      // inet_ntop(AF_INET6, &(ipAddr.u_addr.ip6.addr), str, INET6_ADDRSTRLEN);
-      inet_ntop(AF_INET6, &(ip_info.ip.addr), str, INET6_ADDRSTRLEN);
-
-      //    ESP_LOGI(TAG, "Got IPv6 event: address: " IPV6STR,
-      //    IPV62STR(ip_info->ip));
-
-      //			ESP_LOGI(TAG, "IP6 %s", str);
-    } else {
-      ESP_LOGI(TAG, "wrong remote IP address type %u", remote_ip.type);
-
-      continue;
-    }
+    //    ip_addr_t ipAddr;
+    //    if (remote_ip.type == IPADDR_TYPE_V4) {
+    //      esp_netif_ip_info_t ip_info;
+    //      memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
+    //
+    //      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
+    //      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+    //      //       if (network_is_netif_up(
+    //      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) )
+    //      {
+    //      //         esp_netif_get_ip_info(eth_netif, &ip_info);
+    //      //       }
+    //      //       else
+    //      // #endif
+    //      //       {
+    //      // if (network_is_netif_up( netif ) )
+    ////      {
+    //        esp_netif_get_ip_info(netif, &ip_info);
+    ////      }
+    //      //      }
+    //
+    //      ip_addr_t _ipAddr = IPADDR4_INIT(ip_info.ip.addr);
+    //
+    //      ipAddr = _ipAddr;
+    //
+    //      char str[INET_ADDRSTRLEN];
+    //      inet_ntop(AF_INET, &(ipAddr.u_addr.ip4.addr), str, INET_ADDRSTRLEN);
+    //
+    //      ESP_LOGI(TAG, "IP4 %s", str);
+    //    } else if (remote_ip.type == IPADDR_TYPE_V6) {
+    //      esp_netif_ip6_info_t ip_info;
+    //      memset(&ip_info, 0, sizeof(esp_netif_ip6_info_t));
+    //
+    //      // #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET ||
+    //      // CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+    //      //       if (network_is_netif_up(
+    //      //       network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH)) )
+    //      {
+    //      //         esp_netif_get_ip6_linklocal(eth_netif, &ip_info.ip);
+    //      //       }
+    //      //       else
+    //      // #endif
+    //      //       {
+    //      //         if (network_is_netif_up(
+    //      //         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA))
+    //      ) { esp_netif_get_ip6_linklocal(netif, &ip_info.ip);
+    //      //        }
+    //      //      }
+    //
+    //      ip_addr_t _ipAddr = IPADDR6_INIT(ip_info.ip.addr[0],
+    //      ip_info.ip.addr[1],
+    //                                       ip_info.ip.addr[2],
+    //                                       ip_info.ip.addr[3]);
+    //      ipAddr = _ipAddr;
+    //
+    //      char str[INET6_ADDRSTRLEN];
+    //      // inet_ntop(AF_INET6, &(ipAddr.u_addr.ip6.addr), str,
+    //      INET6_ADDRSTRLEN); inet_ntop(AF_INET6, &(ip_info.ip.addr), str,
+    //      INET6_ADDRSTRLEN);
+    //
+    //      //    ESP_LOGI(TAG, "Got IPv6 event: address: " IPV6STR,
+    //      //    IPV62STR(ip_info->ip));
+    //
+    //      //			ESP_LOGI(TAG, "IP6 %s", str);
+    //    } else {
+    //      ESP_LOGI(TAG, "wrong remote IP address type %u", remote_ip.type);
+    //
+    //      continue;
+    //    }
 
     if (remote_ip.type == IPADDR_TYPE_V4) {
       lwipNetconn = netconn_new(NETCONN_TCP);
 
-      ESP_LOGI(TAG, "netconn using IPv4");
+      ESP_LOGV(TAG, "netconn using IPv4");
     } else if (remote_ip.type == IPADDR_TYPE_V6) {
       lwipNetconn = netconn_new(NETCONN_TCP_IPV6);
 
-      ESP_LOGI(TAG, "netconn using IPv6");
+      ESP_LOGV(TAG, "netconn using IPv6");
     } else {
       ESP_LOGW(TAG, "remote IP has unsupported IP type");
 
@@ -705,15 +710,34 @@ static void http_get_task(void *pvParameters) {
       continue;
     }
 
-    rc1 = netconn_bind(lwipNetconn, &ipAddr, 0);
+#define USE_INTERFACE_BIND
+
+#ifdef USE_INTERFACE_BIND  // use interface to bind connection
+    uint8_t netifIdx = esp_netif_get_netif_impl_index(netif);
+    rc1 = netconn_bind_if(lwipNetconn, netifIdx);
+    if (rc1 != ERR_OK) {
+      ESP_LOGE(TAG, "can't bind interface %s", network_get_ifkey(netif));
+    }
+#else  // use IP to bind connection
+    if (remote_ip.type == IPADDR_TYPE_V4) {
+      // rc1 = netconn_bind(lwipNetconn, &ipAddr, 0);
+      rc1 = netconn_bind(lwipNetconn, IP4_ADDR_ANY, 0);
+    } else {
+      rc1 = netconn_bind(lwipNetconn, IP6_ADDR_ANY, 0);
+    }
+
     if (rc1 != ERR_OK) {
       ESP_LOGE(TAG, "can't bind local IP");
     }
-
+#endif
     rc2 = netconn_connect(lwipNetconn, &remote_ip, remotePort);
     if (rc2 != ERR_OK) {
       ESP_LOGE(TAG, "can't connect to remote %s:%d, err %d",
                ipaddr_ntoa(&remote_ip), remotePort, rc2);
+
+#if !SNAPCAST_SERVER_USE_MDNS
+      vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
     }
 
     if (rc1 != ERR_OK || rc2 != ERR_OK) {
@@ -753,7 +777,10 @@ static void http_get_task(void *pvParameters) {
 
     // init base message
     base_message_rx.type = SNAPCAST_MESSAGE_HELLO;
-    base_message_rx.id = 0;  // id_counter++;
+    xSemaphoreTake(idCounterSemaphoreHandle, portMAX_DELAY);
+    base_message_rx.id = id_counter++;
+    xSemaphoreGive(idCounterSemaphoreHandle);
+
     base_message_rx.refersTo = 0x0000;
     base_message_rx.sent.sec = now / 1000000;
     base_message_rx.sent.usec = now - base_message_rx.sent.sec * 1000000;
@@ -837,9 +864,9 @@ static void http_get_task(void *pvParameters) {
     firstNetBuf = NULL;
 
     while (1) {
-      //      ESP_LOGI(TAG, "test");
       rc2 = netconn_recv(lwipNetconn, &firstNetBuf);
       if (rc2 != ERR_OK) {
+        ESP_LOGE(TAG, "netconn err %d", rc2);
         if (rc2 == ERR_CONN) {
           netconn_close(lwipNetconn);
 
@@ -887,9 +914,8 @@ static void http_get_task(void *pvParameters) {
 
         rc1 = netbuf_data(firstNetBuf, (void **)&start, &len);
         if (rc1 == ERR_OK) {
-          // ESP_LOGI (TAG, "netconn rx,"
-          // "data len: %d, %d", len, netbuf_len(firstNetBuf) -
-          // currentPos);
+          // ESP_LOGI (TAG, "netconn rx, data len: %d, %d",
+          // len, netbuf_len(firstNetBuf));
         } else {
           ESP_LOGE(TAG, "netconn rx, couldn't get data");
 
@@ -1040,16 +1066,18 @@ static void http_get_task(void *pvParameters) {
 
                   typedMsgCurrentPos = 0;
 
-                  //                   ESP_LOGI(TAG,"BM type %d ts %d.%d",
-                  //                   base_message_rx.type,
+                  ESP_LOGI(TAG, "BM type %d ts %ld.%ld, refers to %u",
+                           base_message_rx.type, base_message_rx.received.sec,
+                           base_message_rx.received.usec,
+                           base_message_rx.refersTo);
+                  // ESP_LOGI(TAG,"%u, %ld.%ld", base_message_rx.type,
                   //                   base_message_rx.received.sec,
                   //                   base_message_rx.received.usec);
-                  // ESP_LOGI(TAG,"%d, %d.%d", base_message_rx.type,
-                  //                   base_message_rx.received.sec,
-                  //                   base_message_rx.received.usec);
-                  // ESP_LOGI(TAG,"%d, %llu", base_message_rx.type,
-                  //		   1000000ULL * base_message_rx.received.sec +
-                  // base_message_rx.received.usec);
+                  // ESP_LOGI(TAG,"%u, %llu", base_message_rx.type,
+                  //		                      1000000ULL *
+                  //                          (uint64_t)base_message_rx.received.sec
+                  //                          +
+                  //                          (uint64_t)base_message_rx.received.usec);
 
                   state = TYPED_MESSAGE_STATE;
                   break;
@@ -1692,6 +1720,8 @@ static void http_get_task(void *pvParameters) {
                 case SNAPCAST_MESSAGE_CODEC_HEADER: {
                   switch (internalState) {
                     case 0: {
+                      received_header = false;
+
                       typedMsgLen = *start & 0xFF;
 
                       typedMsgCurrentPos++;
@@ -1738,6 +1768,11 @@ static void http_get_task(void *pvParameters) {
 
                     case 3: {
                       typedMsgLen |= (*start & 0xFF) << 24;
+
+                      if (codecString) {
+                        free(codecString);
+                        codecString = NULL;
+                      }
 
                       codecString =
                           malloc(typedMsgLen + 1);  // allocate memory for
@@ -1873,6 +1908,11 @@ static void http_get_task(void *pvParameters) {
                     case 8: {
                       typedMsgLen |= (*start & 0xFF) << 24;
 
+                      if (codecPayload) {
+                        free(codecPayload);
+                        codecPayload = NULL;
+                      }
+
                       codecPayload = malloc(typedMsgLen);  // allocate memory
                                                            // for codec payload
                       if (codecPayload == NULL) {
@@ -1964,12 +2004,17 @@ static void http_get_task(void *pvParameters) {
                           ESP_LOGI(TAG, "Initialized opus Decoder: %d", error);
                         } else if (codec == FLAC) {
                           decoderChunk.bytes = typedMsgLen;
-                          decoderChunk.inData =
-                              (uint8_t *)malloc(decoderChunk.bytes);
+                          do {
+                            decoderChunk.inData =
+                                (uint8_t *)malloc(decoderChunk.bytes);
+                            vTaskDelay(pdMS_TO_TICKS(1));
+                          } while (decoderChunk.inData == NULL);
                           memcpy(decoderChunk.inData, codecPayload,
                                  typedMsgLen);
                           decoderChunk.outData = NULL;
                           decoderChunk.type = SNAPCAST_MESSAGE_CODEC_HEADER;
+
+                          ESP_LOGI(TAG, "############### CODEC");
 
                           flacDecoder = FLAC__stream_decoder_new();
                           if (flacDecoder == NULL) {
@@ -2267,37 +2312,40 @@ static void http_get_task(void *pvParameters) {
                   break;
                 }
 
-                case SNAPCAST_MESSAGE_STREAM_TAGS: {
-                  size_t tmpSize = base_message_rx.size - typedMsgCurrentPos;
-
-                  if (tmpSize < len) {
-                    start += tmpSize;
-                    // currentPos += tmpSize;
-                    typedMsgCurrentPos += tmpSize;
-                    len -= tmpSize;
-                  } else {
-                    start += len;
-                    // currentPos += len;
-
-                    typedMsgCurrentPos += len;
-                    len = 0;
-                  }
-
-                  if (typedMsgCurrentPos >= base_message_rx.size) {
-                    // ESP_LOGI(TAG,
-                    // "done stream tags with length %d %d %d",
-                    // base_message_rx.size, currentPos,
-                    // tmpSize);
-
-                    typedMsgCurrentPos = 0;
-                    // currentPos = 0;
-
-                    state = BASE_MESSAGE_STATE;
-                    internalState = 0;
-                  }
-
-                  break;
-                }
+                  //                case SNAPCAST_MESSAGE_STREAM_TAGS: {
+                  //                  size_t tmpSize = base_message_rx.size -
+                  //                  typedMsgCurrentPos;
+                  //
+                  //                  if (tmpSize < len) {
+                  //                    start += tmpSize;
+                  //                    // currentPos += tmpSize;
+                  //                    typedMsgCurrentPos += tmpSize;
+                  //                    len -= tmpSize;
+                  //                  } else {
+                  //                    start += len;
+                  //                    // currentPos += len;
+                  //
+                  //                    typedMsgCurrentPos += len;
+                  //                    len = 0;
+                  //                  }
+                  //
+                  //                  if (typedMsgCurrentPos >=
+                  //                  base_message_rx.size) {
+                  //                    // ESP_LOGI(TAG,
+                  //                    // "done stream tags with length %d %d
+                  //                    %d",
+                  //                    // base_message_rx.size, currentPos,
+                  //                    // tmpSize);
+                  //
+                  //                    typedMsgCurrentPos = 0;
+                  //                    // currentPos = 0;
+                  //
+                  //                    state = BASE_MESSAGE_STATE;
+                  //                    internalState = 0;
+                  //                  }
+                  //
+                  //                  break;
+                  //                }
 
                 case SNAPCAST_MESSAGE_TIME: {
                   switch (internalState) {

@@ -4,7 +4,7 @@
 
 ## Feature list
 - FLAC, OPUS and PCM decoding currently supported
-- Wifi setup from menuconfig or through espressif Android App "SoftAP Prov"
+- Wifi setup from menuconfig or through [ImprovWifi via Serial](https://www.improv-wifi.com/)
 - Auto connect to snapcast server on network
 - Buffers up to 758ms on Wroom modules (tested with 44100:16:2)
 - Buffers more then enough on Wrover modules

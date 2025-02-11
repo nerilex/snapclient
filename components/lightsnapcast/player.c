@@ -237,20 +237,25 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
            "rate: %ld, bits: %d",
            i2sDmaBufMaxLen, i2sDmaBufCnt, sr, bits);
 
-  i2s_std_clk_config_t i2s_clkcfg = {
-      .sample_rate_hz = sr,
+  i2s_std_clk_config_t i2s_clkcfg = I2S_STD_CLK_DEFAULT_CONFIG(sr);
+
 #if USE_SAMPLE_INSERTION
-      .clk_src = I2S_CLK_SRC_DEFAULT,
+  i2s_clkcfg.clk_src = I2S_CLK_SRC_DEFAULT;
 #else
-      .clk_src = I2S_CLK_SRC_APLL,
+  i2s_clkcfg.clk_src = I2S_CLK_SRC_APLL;
 #endif
-      .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-  };
+
+  // Please set the mclk_multiple to I2S_MCLK_MULTIPLE_384
+  // while using 24 bits data width Otherwise the sample rate
+  // might be imprecise since the BCLK division is not a integer
+  if (bits > I2S_DATA_BIT_WIDTH_16BIT) {
+    i2s_clkcfg.mclk_multiple = I2S_MCLK_MULTIPLE_384;
+  }
+
   i2s_std_config_t tx_std_cfg = {
       .clk_cfg = i2s_clkcfg,
 #if CONFIG_I2S_USE_MSB_FORMAT
-      .slot_cfg =
-          I2S_STD_MSB_SLOT_DEFAULT_CONFIG(setting->bits, I2S_SLOT_MODE_STEREO),
+      .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
 #else
       .slot_cfg =
           I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
@@ -301,7 +306,7 @@ static int destroy_pcm_queue(QueueHandle_t *queueHandle) {
   pcm_chunk_message_t *chnk = NULL;
 
   if (*queueHandle == NULL) {
-    ESP_LOGW(TAG, "no pcm chunk queue created?");
+    ESP_LOGV(TAG, "no pcm chunk queue created?");
     ret = pdFAIL;
   } else {
     // free all allocated memory
@@ -332,7 +337,7 @@ int deinit_player(void) {
 
   // stop the task
   if (playerTaskHandle == NULL) {
-    ESP_LOGW(TAG, "no sync task created?");
+    ESP_LOGV(TAG, "no sync task created?");
   } else {
     vTaskDelete(playerTaskHandle);
     playerTaskHandle = NULL;
@@ -346,7 +351,7 @@ int deinit_player(void) {
   ret = destroy_pcm_queue(&pcmChkQHdl);
 
   if (latencyBufSemaphoreHandle == NULL) {
-    ESP_LOGW(TAG, "no latency buffer semaphore created?");
+    ESP_LOGV(TAG, "no latency buffer semaphore created?");
   } else {
     vSemaphoreDelete(latencyBufSemaphoreHandle);
     latencyBufSemaphoreHandle = NULL;
