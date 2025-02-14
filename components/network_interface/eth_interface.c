@@ -423,6 +423,8 @@ void eth_start(void) {
 
   ESP_ERROR_CHECK(eth_init(&eth_handles, &eth_port_cnt));
 
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
   // Create instance(s) of esp-netif for Ethernet(s)
   if (eth_port_cnt == 1) {
     // Use ESP_NETIF_DEFAULT_ETH when just one Ethernet interface is used and
@@ -470,4 +472,5 @@ void eth_start(void) {
   for (int i = 0; i < eth_port_cnt; i++) {
     ESP_ERROR_CHECK(esp_eth_start(eth_handles[i]));
   }
+#endif
 }
