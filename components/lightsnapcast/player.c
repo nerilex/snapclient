@@ -24,7 +24,6 @@
 #include <math.h>
 
 #include "MedianFilter.h"
-#include "board_pins_config.h"
 #include "driver/gptimer.h"
 #include "driver/i2s_std.h"
 #include "player.h"
@@ -99,10 +98,13 @@ static bool gpTimerRunning = false;
 
 static void player_task(void *pvParameters);
 
-extern esp_err_t audio_set_mute(bool mute);
+extern void audio_set_mute(bool mute);
 
 static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
 static bool i2sEnabled = false;
+
+i2s_std_gpio_config_t pin_config0;
+i2s_port_t i2sNum;
 
 /**
  *
@@ -137,8 +139,25 @@ esp_err_t my_i2s_channel_enable(i2s_chan_handle_t handle) {
 /**
  *
  */
-static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
-                                  snapcastSetting_t *setting) {
+static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
+  // ensure save setting
+  int32_t sr = setting->sr;
+  if (sr == 0) {
+    sr = 44100;
+  }
+
+  // ensure save setting
+  int bits = setting->bits;
+  if (bits == 0) {
+    bits = I2S_DATA_BIT_WIDTH_16BIT;
+  }
+
+  // ensure save setting
+  uint32_t chkInFrames = setting->chkInFrames;
+  if (chkInFrames == 0) {
+    chkInFrames = 1152;
+  }
+
 #if USE_SAMPLE_INSERTION
   i2sDmaBufCnt = 22;
   // OPUS has a minimum frame size of 120
@@ -153,7 +172,7 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   int __dmaBufLen;
 
   __dmaBufCnt = 1;
-  __dmaBufLen = setting->chkInFrames;
+  __dmaBufLen = chkInFrames;
   while ((__dmaBufLen >= __dmaBufMaxLen) || (__dmaBufCnt <= 1)) {
     if ((__dmaBufLen % 2) == 0) {
       __dmaBufCnt *= 2;
@@ -170,11 +189,11 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
   i2sDmaBufMaxLen = __dmaBufLen;
 
   // check i2s_set_get_apll_freq() how it is done
-  fi2s_clk = 2 * setting->sr *
-             I2S_MCLK_MULTIPLE_256;  // setting->ch * setting->bits * m_scale;
+  fi2s_clk =
+      2 * sr * I2S_MCLK_MULTIPLE_256;  // setting->ch * setting->bits * m_scale;
 
-  apll_normal_predefine[0] = setting->bits;
-  apll_normal_predefine[1] = setting->sr;
+  apll_normal_predefine[0] = bits;
+  apll_normal_predefine[1] = sr;
   if (rtc_clk_apll_coeff_calc(
           fi2s_clk, &apll_normal_predefine[5], &apll_normal_predefine[2],
           &apll_normal_predefine[3], &apll_normal_predefine[4]) == 0) {
@@ -184,16 +203,16 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
 #define UPPER_SR_SCALER 1.0001
 #define LOWER_SR_SCALER 0.9999
 
-  apll_corr_predefine[0][0] = setting->bits;
-  apll_corr_predefine[0][1] = setting->sr * UPPER_SR_SCALER;
+  apll_corr_predefine[0][0] = bits;
+  apll_corr_predefine[0][1] = sr * UPPER_SR_SCALER;
   if (rtc_clk_apll_coeff_calc(
           fi2s_clk * UPPER_SR_SCALER, &apll_corr_predefine[0][5],
           &apll_corr_predefine[0][2], &apll_corr_predefine[0][3],
           &apll_corr_predefine[0][4]) == 0) {
     ESP_LOGE(TAG, "ERROR, fi2s_clk * %f", UPPER_SR_SCALER);
   }
-  apll_corr_predefine[1][0] = setting->bits;
-  apll_corr_predefine[1][1] = setting->sr * LOWER_SR_SCALER;
+  apll_corr_predefine[1][0] = bits;
+  apll_corr_predefine[1][1] = sr * LOWER_SR_SCALER;
   if (rtc_clk_apll_coeff_calc(
           fi2s_clk * LOWER_SR_SCALER, &apll_corr_predefine[1][5],
           &apll_corr_predefine[1][2], &apll_corr_predefine[1][3],
@@ -216,21 +235,6 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
       .auto_clear = false,
   };
   ESP_ERROR_CHECK(i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL));
-
-  board_i2s_pin_t pin_config0;
-  get_i2s_pins(i2sNum, &pin_config0);
-
-  // ensure save setting
-  int32_t sr = setting->sr;
-  if (sr == 0) {
-    sr = 44100;
-  }
-
-  // ensure save setting
-  int bits = setting->bits;
-  if (bits == 0) {
-    bits = I2S_DATA_BIT_WIDTH_16BIT;
-  }
 
   ESP_LOGI(TAG,
            "player_setup_i2s: dma_buf_len is %ld, dma_buf_count is %ld, sample "
@@ -260,35 +264,7 @@ static esp_err_t player_setup_i2s(i2s_port_t i2sNum,
       .slot_cfg =
           I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
 #endif
-      .gpio_cfg =
-          {
-              .mclk = pin_config0.mck_io_num,
-              .bclk = pin_config0.bck_io_num,
-              .ws = pin_config0.ws_io_num,
-              .dout = pin_config0.data_out_num,
-              .din = pin_config0.data_in_num,
-              .invert_flags =
-                  {
-#if CONFIG_INVERT_MCLK_LEVEL
-                      .mclk_inv = true,
-
-#else
-                      .mclk_inv = false,
-#endif
-
-#if CONFIG_INVERT_BCLK_LEVEL
-                      .bclk_inv = true,
-#else
-                      .bclk_inv = false,
-#endif
-
-#if CONFIG_INVERT_WORD_SELECT_LEVEL
-                      .ws_inv = true,
-#else
-                      .ws_inv = false,
-#endif
-                  },
-          },
+      .gpio_cfg = pin_config0,
   };
 
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
@@ -367,10 +343,13 @@ int deinit_player(void) {
 /**
  *  call before http task creation!
  */
-int init_player(void) {
+int init_player(i2s_std_gpio_config_t pin_config0_, i2s_port_t i2sNum_) {
   int ret = 0;
 
   deinit_player();
+
+  pin_config0 = pin_config0_;
+  i2sNum = i2sNum_;
 
   currentSnapcastSetting.buf_ms = 0;
   currentSnapcastSetting.chkInFrames = 0;
@@ -386,7 +365,7 @@ int init_player(void) {
     xSemaphoreGive(snapcastSettingsMux);
   }
 
-  ret = player_setup_i2s(I2S_NUM_0, &currentSnapcastSetting);
+  ret = player_setup_i2s(&currentSnapcastSetting);
   if (ret < 0) {
     ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
 
@@ -1224,7 +1203,7 @@ static void player_task(void *pvParameters) {
           audio_set_mute(true);
           my_i2s_channel_disable(tx_chan);
 
-          ret = player_setup_i2s(I2S_NUM_0, &__scSet);
+          ret = player_setup_i2s(&__scSet);
           if (ret < 0) {
             ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
 
