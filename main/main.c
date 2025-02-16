@@ -1066,10 +1066,12 @@ static void http_get_task(void *pvParameters) {
 
                   typedMsgCurrentPos = 0;
 
-                  ESP_LOGI(TAG, "BM type %d ts %ld.%ld, refers to %u",
-                           base_message_rx.type, base_message_rx.received.sec,
-                           base_message_rx.received.usec,
-                           base_message_rx.refersTo);
+                  // ESP_LOGI(TAG, "BM type %d ts %ld.%ld, refers to %u",
+                  //          base_message_rx.type,
+                  //          base_message_rx.received.sec,
+                  //          base_message_rx.received.usec,
+                  //          base_message_rx.refersTo);
+
                   // ESP_LOGI(TAG,"%u, %ld.%ld", base_message_rx.type,
                   //                   base_message_rx.received.sec,
                   //                   base_message_rx.received.usec);
