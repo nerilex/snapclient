@@ -210,6 +210,18 @@ Test the server config on other knowen platform
 
 Android : snapclient from the app play store
 
+## OTA update
+Update your client(s) over the air.
+
+On a linux box:
+
+```
+cd snapclient
+idf.py build 
+curl snapclient.local:8032 --data-binary @- < build/snapclient.bin
+```
+Replace `snapclient.local` with your clients IP address. If you have multiple clients you could use the Android or Web App to find out your clients IPs.
+
 ## Contribute
 
 You are very welcome to help and provide [Pull
