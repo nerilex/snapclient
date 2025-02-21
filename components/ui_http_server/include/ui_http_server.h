@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-void init_http_server_task(char *key);
+void init_http_server_task(void);
 
 typedef struct {
   char str_value[8];

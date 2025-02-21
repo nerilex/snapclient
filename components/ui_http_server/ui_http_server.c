@@ -8,31 +8,26 @@
          CONDITIONS OF ANY KIND, either express or implied.
 */
 
-#include "ui_http_server.h"
-
-#include <inttypes.h>
-#include <math.h>
-#include <mbedtls/base64.h>
-#include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 
-#include "dsp_processor.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_vfs.h"
-#include "esp_wifi.h"
+// #include "esp_wifi.h"
+
+#include "dsp_processor.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "ui_http_server.h"
 
-static const char *TAG = "HTTP";
+static const char *TAG = "UI_HTTP";
 
-static QueueHandle_t xQueueHttp;
-
-static esp_netif_t *netInterface = NULL;
+static QueueHandle_t xQueueHttp = NULL;
+static TaskHandle_t taskHandle = NULL;
+static httpd_handle_t server = NULL;
 
 /**
  *
@@ -53,28 +48,32 @@ static void SPIFFS_Directory(char *path) {
  *
  */
 static esp_err_t SPIFFS_Mount(char *path, char *label, int max_files) {
-  esp_vfs_spiffs_conf_t conf = {.base_path = path,
-                                .partition_label = label,
-                                .max_files = max_files,
-                                .format_if_mount_failed = true};
+  esp_err_t ret;
 
-  // Use settings defined above to initialize and mount SPIFFS file system.
-  // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
-  esp_err_t ret = esp_vfs_spiffs_register(&conf);
+  if (!esp_spiffs_mounted(label)) {
+    esp_vfs_spiffs_conf_t conf = {.base_path = path,
+                                  .partition_label = label,
+                                  .max_files = max_files,
+                                  .format_if_mount_failed = true};
 
-  if (ret != ESP_OK) {
-    if (ret == ESP_FAIL) {
-      ESP_LOGE(TAG, "Failed to mount or format filesystem");
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-      ESP_LOGE(TAG, "Failed to find SPIFFS partition");
-    } else {
-      ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+    // Use settings defined above to initialize and mount SPIFFS file system.
+    // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
+    ret = esp_vfs_spiffs_register(&conf);
+
+    if (ret != ESP_OK) {
+      if (ret == ESP_FAIL) {
+        ESP_LOGE(TAG, "Failed to mount or format filesystem");
+      } else if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+      } else {
+        ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+      }
+      return ret;
     }
-    return ret;
   }
 
   size_t total = 0, used = 0;
-  ret = esp_spiffs_info(conf.partition_label, &total, &used);
+  ret = esp_spiffs_info(label, &total, &used);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)",
              esp_err_to_name(ret));
@@ -258,9 +257,7 @@ static esp_err_t root_post_handler(httpd_req_t *req) {
   /* Redirect onto root to see the updated file list */
   httpd_resp_set_status(req, "303 See Other");
   httpd_resp_set_hdr(req, "Location", "/");
-#ifdef CONFIG_EXAMPLE_HTTPD_CONN_CLOSE_HEADER
-  httpd_resp_set_hdr(req, "Connection", "close");
-#endif
+  // httpd_resp_set_hdr(req, "Connection", "close");
   httpd_resp_sendstr(req, "post successfully");
   return ESP_OK;
 }
@@ -273,11 +270,21 @@ static esp_err_t favicon_get_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+/**
+ */
+esp_err_t stop_server(void) {
+  if (server) {
+    httpd_stop(server);
+    server = NULL;
+  }
+
+  return ESP_OK;
+}
+
 /*
  * Function to start the web server
  */
 esp_err_t start_server(const char *base_path, int port) {
-  httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
   config.max_open_sockets = 2;
@@ -317,86 +324,15 @@ esp_err_t start_server(const char *base_path, int port) {
   return ESP_OK;
 }
 
-//// LEDC Stuff
-//#define LEDC_TIMER			LEDC_TIMER_0
-//#define LEDC_MODE			LEDC_LOW_SPEED_MODE
-////#define LEDC_OUTPUT_IO	(5) // Define the output GPIO
-//#define LEDC_OUTPUT_IO		CONFIG_BLINK_GPIO // Define the output
-// GPIO #define LEDC_CHANNEL		LEDC_CHANNEL_0 #define LEDC_DUTY_RES
-// LEDC_TIMER_13_BIT // Set duty resolution to 13 bits #define LEDC_DUTY
-//(4095) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095 #define LEDC_FREQUENCY
-//(5000) // Frequency in Hertz. Set frequency at 5 kHz
-//
-// static void ledc_init(void)
-//{
-//	// Prepare and then apply the LEDC PWM timer configuration
-//	ledc_timer_config_t ledc_timer = {
-//		.speed_mode			= LEDC_MODE,
-//		.timer_num			= LEDC_TIMER,
-//		.duty_resolution	= LEDC_DUTY_RES,
-//		.freq_hz			= LEDC_FREQUENCY,  // Set output
-// frequency at 5 kHz 		.clk_cfg			= LEDC_AUTO_CLK
-//	};
-//	ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
-//
-//	// Prepare and then apply the LEDC PWM channel configuration
-//	ledc_channel_config_t ledc_channel = {
-//		.speed_mode			= LEDC_MODE,
-//		.channel			= LEDC_CHANNEL,
-//		.timer_sel			= LEDC_TIMER,
-//		.intr_type			= LEDC_INTR_DISABLE,
-//		.gpio_num			= LEDC_OUTPUT_IO,
-//		.duty				= 0, // Set duty to 0%
-//		.hpoint				= 0
-//	};
-//	ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
-//}
-
 /**
  *
  */
 static void http_server_task(void *pvParameters) {
-  /* Get the local IP address */
-  esp_netif_ip_info_t ip_info;
-
-  ESP_ERROR_CHECK(esp_netif_get_ip_info(netInterface, &ip_info));
-
-  char ipString[64];
-  sprintf(ipString, IPSTR, IP2STR(&ip_info.ip));
-
-  ESP_LOGI(TAG, "Start http task=%s", ipString);
-
-  char portString[6];
-  sprintf(portString, "%d", CONFIG_WEB_PORT);
-
-  char url[strlen("http://") + strlen(ipString) + strlen(":") +
-           strlen(portString) + 1];
-  memset(url, 0, sizeof(url));
-  strcat(url, ipString);
-  strcat(url, ":");
-  strcat(url, portString);
-
-  // Set the LEDC peripheral configuration
-  //	ledc_init();
-
-  // Set duty to 50%
-  //	double maxduty = pow(2, 13) - 1;
-  //	float percent = 0.5;
-  //	uint32_t duty = maxduty * percent;
-  //	ESP_LOGI(TAG, "duty=%"PRIu32, duty);
-  //	ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY));
-  //	ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty));
-  // Update duty to apply the new value
-  //	ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-
   // Start Server
-  ESP_LOGI(TAG, "Starting server on %s", url);
   ESP_ERROR_CHECK(start_server("/html", CONFIG_WEB_PORT));
 
   URL_t urlBuf;
   while (1) {
-    //	  ESP_LOGW (TAG, "stack free: %d", uxTaskGetStackHighWaterMark(NULL));
-
     // Waiting for post
     if (xQueueReceive(xQueueHttp, &urlBuf, portMAX_DELAY) == pdTRUE) {
       filterParams_t filterParams;
@@ -413,16 +349,6 @@ static void http_server_task(void *pvParameters) {
 #if CONFIG_USE_DSP_PROCESSOR
       dsp_processor_update_filter_params(&filterParams);
 #endif
-
-      // Set duty value
-      //			percent = urlBuf.long_value / 100.0;
-      //			duty = maxduty * percent;
-      //			ESP_LOGI(TAG, "percent=%f duty=%"PRIu32,
-      // percent, duty);
-      // ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty));
-      // Update duty to apply the new value
-      //			ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE,
-      // LEDC_CHANNEL));
     }
   }
 
@@ -434,19 +360,7 @@ static void http_server_task(void *pvParameters) {
 /**
  *
  */
-void init_http_server_task(char *key) {
-  if (!key) {
-    ESP_LOGE(TAG,
-             "key should be \"WIFI_STA_DEF\", \"WIFI_AP_DEF\" or \"ETH_DEF\"");
-    return;
-  }
-
-  netInterface = esp_netif_get_handle_from_ifkey(key);
-  if (!netInterface) {
-    ESP_LOGE(TAG, "can't get net interface for %s", key);
-    return;
-  }
-
+void init_http_server_task(void) {
   // Initialize SPIFFS
   ESP_LOGI(TAG, "Initializing SPIFFS");
   if (SPIFFS_Mount("/html", "storage", 6) != ESP_OK) {
@@ -455,9 +369,17 @@ void init_http_server_task(char *key) {
   }
 
   // Create Queue
-  xQueueHttp = xQueueCreate(10, sizeof(URL_t));
-  configASSERT(xQueueHttp);
+  if (!xQueueHttp) {
+    xQueueHttp = xQueueCreate(10, sizeof(URL_t));
+    configASSERT(xQueueHttp);
+  }
 
-  xTaskCreatePinnedToCore(http_server_task, "HTTP", 512 * 5, NULL, 2, NULL,
-                          tskNO_AFFINITY);
+  if (taskHandle) {
+    stop_server();
+    vTaskDelete(taskHandle);
+    taskHandle = NULL;
+  }
+
+  xTaskCreatePinnedToCore(http_server_task, "HTTP", 512 * 5, NULL, 2,
+                          &taskHandle, tskNO_AFFINITY);
 }

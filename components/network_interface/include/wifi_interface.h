@@ -1,11 +1,6 @@
 #ifndef _WIFI_INTERFACE_H_
 #define _WIFI_INTERFACE_H_
 
-#include "esp_netif_types.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
-#include "freertos/task.h"
-
 // use wifi provisioning
 #define ENABLE_WIFI_PROVISIONING CONFIG_ENABLE_WIFI_PROVISIONING
 
@@ -19,14 +14,7 @@
 
 #define WIFI_MAXIMUM_RETRY CONFIG_WIFI_MAXIMUM_RETRY
 
-/* The event group allows multiple bits for each event, but we only care about
- * two events:
- * - we are connected to the AP with an IP
- * - we failed to connect after the maximum amount of retries */
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT BIT1
-
+bool wifi_get_ip(esp_netif_ip_info_t *ip);
 void wifi_start(void);
-esp_netif_t *get_current_netif(void);
 
 #endif /* _WIFI_INTERFACE_H_ */

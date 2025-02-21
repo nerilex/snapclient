@@ -27,6 +27,9 @@ static const char *TAG = "ETH_IF";
 
 static uint8_t eth_port_cnt = 0;
 
+static esp_netif_ip_info_t ip_info = {{0}, {0}, {0}};
+static bool connected = false;
+
 #if CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
 #define SPI_ETHERNETS_NUM CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
 #else
@@ -375,6 +378,33 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /** Event handler for IP_EVENT_ETH_GOT_IP */
+static void lost_ip_event_handler(void *arg, esp_event_base_t event_base,
+                                  int32_t event_id, void *event_data) {
+  ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+
+  for (int i = 0; i < eth_port_cnt; i++) {
+    char if_desc_str[10];
+    char num_str[3];
+
+    itoa(i, num_str, 10);
+    strcat(strcpy(if_desc_str, NETWORK_INTERFACE_DESC_ETH), num_str);
+
+    if (network_is_our_netif(if_desc_str, event->esp_netif)) {
+      // const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+      memcpy((void *)&ip_info, (const void *)&event->ip_info,
+             sizeof(esp_netif_ip_info_t));
+
+      ESP_LOGI(TAG, "Ethernet Lost IP Address");
+
+      connected = false;
+
+      break;
+    }
+  }
+}
+
+/** Event handler for IP_EVENT_ETH_GOT_IP */
 static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
                                  int32_t event_id, void *event_data) {
   ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -387,18 +417,33 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     strcat(strcpy(if_desc_str, NETWORK_INTERFACE_DESC_ETH), num_str);
 
     if (network_is_our_netif(if_desc_str, event->esp_netif)) {
-      const esp_netif_ip_info_t *ip_info = &event->ip_info;
+      //      const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+      memcpy((void *)&ip_info, (const void *)&event->ip_info,
+             sizeof(esp_netif_ip_info_t));
 
       ESP_LOGI(TAG, "Ethernet Got IP Address");
       ESP_LOGI(TAG, "~~~~~~~~~~~");
-      ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
-      ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
-      ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
+      ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info.netmask));
+      ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info.gw));
       ESP_LOGI(TAG, "~~~~~~~~~~~");
+
+      connected = true;
 
       break;
     }
   }
+}
+
+/**
+ */
+bool eth_get_ip(esp_netif_ip_info_t *ip) {
+  if (ip) {
+    memcpy((void *)ip, (const void *)&ip_info, sizeof(esp_netif_ip_info_t));
+  }
+
+  return connected;
 }
 
 static void eth_on_got_ipv6(void *arg, esp_event_base_t event_base,
@@ -465,6 +510,8 @@ void eth_start(void) {
                                              &eth_event_handler, eth_netif));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
                                              &got_ip_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP,
+                                             &lost_ip_event_handler, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6,
                                              &eth_on_got_ipv6, NULL));
 

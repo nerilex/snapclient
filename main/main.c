@@ -550,33 +550,35 @@ static void http_get_task(void *pvParameters) {
       }
     }
 
+    ESP_LOGI(TAG, "Wait for network connection");
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
     esp_netif_t *eth_netif =
         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH);
+#endif
     esp_netif_t *sta_netif =
         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA);
     while (1) {
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
       bool ethUp = network_is_netif_up(eth_netif);
-      bool staUp = network_is_netif_up(sta_netif);
 
       if (ethUp) {
         netif = eth_netif;
 
         break;
       }
+#endif
 
+      bool staUp = network_is_netif_up(sta_netif);
       if (staUp) {
         netif = sta_netif;
 
         break;
       }
 
-      ESP_LOGI(TAG, "Wait for WiFi or Eth");
-
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
-#endif
 
 #if SNAPCAST_SERVER_USE_MDNS
     // Find snapcast server
@@ -2841,7 +2843,9 @@ void app_main(void) {
     init_http_server_task("WIFI_STA_DEF");
   #endif
   */
-  network_init();
+  network_if_init();
+
+  init_http_server_task();
 
   // Enable websocket server
   //  ESP_LOGI(TAG, "Setup ws server");

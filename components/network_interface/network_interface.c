@@ -67,7 +67,22 @@ bool network_is_netif_up(esp_netif_t *esp_netif) {
   return esp_netif_is_netif_up(esp_netif);
 }
 
-void network_init(void) {
+bool network_if_get_ip(esp_netif_ip_info_t *ip) {
+#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
+    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
+  if (eth_get_ip(ip) == true) {
+    return true;
+  }
+#endif
+
+  if (wifi_get_ip(ip) == true) {
+    return true;
+  }
+
+  return false;
+}
+
+void network_if_init(void) {
   esp_netif_init();
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 

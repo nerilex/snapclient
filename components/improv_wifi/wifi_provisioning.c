@@ -13,8 +13,10 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/projdefs.h"
 #include "freertos/task.h"
 #include "improv_wrapper.h"
+#include "network_interface.h"
 #include "wifi_interface.h"
 
 #define TAG "IMPROV"
@@ -105,13 +107,10 @@ void improv_wifi_scan(unsigned char *scanResponse, int bufLen,
 
     esp_wifi_scan_start(NULL, true);
   }
-  //  ESP_LOGI(TAG, "Max AP number ap_info can hold = %u", number);
+  // ESP_LOGI(TAG, "Max AP number ap_info can hold = %u", number);
   ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
-  ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(count));
-  //  ESP_LOGI(TAG, "Total APs scanned = %u, actual AP number ap_info holds =
-  //  %u",
-  //           *count, number);
 
+  *count = 0;
   scanResponse[0] = 0;
   for (int i = 0; i < number; i++) {
     char rssiStr[8] = {
@@ -120,7 +119,7 @@ void improv_wifi_scan(unsigned char *scanResponse, int bufLen,
     char cipherStr[8] = {
         0,
     };
-    uint16_t neededLen;
+    int16_t neededLen;
 
     itoa(ap_info[i].rssi, rssiStr, 10);
     if (ap_info[i].authmode != WIFI_AUTH_OPEN) {
@@ -140,19 +139,20 @@ void improv_wifi_scan(unsigned char *scanResponse, int bufLen,
       strcat((char *)scanResponse, (char *)"\n");
 
       bufLen -= neededLen;
+
+      (*count)++;
     }
   }
 
-  //  ESP_LOGI(TAG, "APs \t\t%s", scanResponse);
+  //  ESP_LOGI(TAG, "APs \n%s", scanResponse);
 }
 
 bool improv_wifi_connect(const char *ssid, const char *password) {
   uint8_t count = 0;
-  wifi_ap_record_t apRec;
-  esp_err_t err;
+  esp_netif_ip_info_t ip;
 
-  while ((err = esp_wifi_sta_get_ap_info(&apRec)) != ESP_ERR_WIFI_NOT_CONNECT) {
-    esp_wifi_disconnect();
+  esp_wifi_disconnect();
+  while (wifi_get_ip(&ip) == true) {
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 
@@ -163,7 +163,7 @@ bool improv_wifi_connect(const char *ssid, const char *password) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
   esp_wifi_connect();
-  while (esp_wifi_sta_get_ap_info(&apRec) != ESP_OK) {
+  while (wifi_get_ip(&ip) == false) {
     vTaskDelay(pdMS_TO_TICKS(500));
     if (count > 20) {
       esp_wifi_disconnect();
@@ -175,42 +175,41 @@ bool improv_wifi_connect(const char *ssid, const char *password) {
   return true;
 }
 
+/**
+ */
 bool improv_wifi_is_connected(void) {
-  wifi_ap_record_t apRec;
+  bool ret = network_if_get_ip(NULL);
 
-  if (esp_wifi_sta_get_ap_info(&apRec) == ESP_OK) {
-    //    	printf("connected\n");
-
-    return true;
-  }
-
-  //    printf("NOT connected\n");
-
-  return false;
+  return ret;
 }
 
+/**
+ */
 void improv_wifi_get_local_ip(uint8_t *address) {
   esp_netif_ip_info_t ip_info;
 
-  // TODO: find a better way to do this
-  do {
-    esp_netif_get_ip_info(get_current_netif(), &ip_info);
-    vTaskDelay(pdMS_TO_TICKS(200));
-  } while (ip_info.ip.addr == 0);
+  if (network_if_get_ip(&ip_info) == false) {
+    ESP_LOGE(TAG, "%s: no valid IP available", __func__);
+
+    return;
+  }
 
   address[0] = ip_info.ip.addr >> 0;
   address[1] = ip_info.ip.addr >> 8;
   address[2] = ip_info.ip.addr >> 16;
   address[3] = ip_info.ip.addr >> 24;
 
-  // ESP_LOGI(TAG, "%d.%d.%d.%d", address[0], address[1], address[2],
-  // address[3]);
+  ESP_LOGI(TAG, "%d.%d.%d.%d", address[0], address[1], address[2], address[3]);
 }
 
+/**
+ */
 void improv_init(void) {
   uint8_t webPortStr[6] = {0};
   uint16_t webPort = CONFIG_WEB_PORT;
   uint8_t urlStr[26] = "http://{LOCAL_IPV4}:";
+
+  ESP_LOGI(TAG, "start IPROV WiFi provisioning service");
 
   utoa(webPort, (char *)webPortStr, 10);
   strcat((char *)urlStr, (char *)webPortStr);
@@ -244,4 +243,5 @@ void improv_deinit(void) {
     t_improv_task = NULL;
   }
   improv_wifi_destroy();
+  ESP_ERROR_CHECK(uart_driver_delete(UART_NUM_0));
 }

@@ -4,7 +4,9 @@
 
 ## Feature list
 - FLAC, OPUS and PCM decoding currently supported
-- Wifi setup from menuconfig or through [ImprovWifi via Serial](https://www.improv-wifi.com/)
+- Wifi setup from menuconfig
+- WiFi provisioning via [ImprovWifi via Serial](https://www.improv-wifi.com/)<br>
+  Ensure your browser supports this, Chrome or Edge will handle serial communication just fine.
 - Auto connect to snapcast server on network
 - Buffers up to 758ms on Wroom modules (tested with 44100:16:2)
 - Buffers more then enough on Wrover modules
@@ -12,10 +14,10 @@
 - DSP / EQ functionality configurable through menuconfig and partly controllable through HTTP server running on ESP client (work in progress)
 
 ## Description
-I have continued the work from @badaix, @bridadan and @jorgenkraghjakobsen towards a ESP32 Snapcast
-client. Currently it support basic features like multiroom sync, network
-controlled volume and mute. For now it supports FLAC, OPUS, PCM 16bit
-audio streams with sample rates up to 48Khz maybe more, I didn't test.
+I have picked up the work from [bridadan](https://github.com/bridadan/libsnapcast) and [jorgenkraghjakobsen](https://github.com/jorgenkraghjakobsen/snapclient)
+towards a ESP32 Snapcast client. It is a full featured snapcast client which
+supports the codecs FLAC, OPUS and PCM 16bit audio streams with sample rates
+up to 48Khz maybe more, I didn't test.
 
 Please check out the task list and feel free to fill in.
 
@@ -29,7 +31,7 @@ The codebase is split into components and build on <b>ESP-IDF v5.1.5</b>. I stil
 have some refactoring on the todo list as the concept has started to settle and
 allow for new features can be added in a structured manner. In the code you
 will find parts that are only partly related features and still not on the task
-list. Also there is a lot of code clean up needed.
+list. Also there is a lot of code clean up needed, as there is quite some dead code too.
 
 Components
  - audio-board : taken from ADF, stripped down to strictly necessary parts for playback
@@ -40,24 +42,26 @@ Components
  - esp-dsp : Submodule to the ESP-ADF done by David Douard
  - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
  - flac : flac audio encoder/decoder full submodule
- - libmedian: Median Filter implementation. Many thanks to @accabog https://github.com/accabog/MedianFilter
+ - opus : Opus audio coder/decoder full submodule
+ - libmedian: Median Filter implementation. Many thanks to [accabog](https://github.com/accabog/MedianFilter)
  - libbuffer : Generic buffer abstraction
  - lightsnapcast :
    * snapcast module, port of @bridadan scapcast packages decode library
    * player module, which is responsible for sync and low level I2S control
  - net_functions :
- - opus : Opus audio coder/decoder full submodule
  - ota_server :
  - protocol :
  - rtprx : Alternative RTP audio client UDP low latency also opus based
  - websocket :
  - websocket_if :
- - wifi_interface : wifi provisoning and init code for wifi module and AP connection
+ - improv_wifi : WiFi provisioning via [ImprovWifi via Serial](https://www.improv-wifi.com/)
+ - network_interface : init code for wifi module and AP connection and ethernet init code
+ - ui_http_server : work in progress control interface for DSP functions
 
 The snapclient functionanlity are implemented in a task included in main - but
 should be refactored to a component at some point.
 
-I did my own syncing implementation which is different than @jorgenkraghjakobsen's
+I did my own syncing implementation which is different than jorgenkraghjakobsen's
 approach in the original repository, at least regarding syncing itself. I tried to
 replicate the behaivior of how badaix did it for his original snapclients.
 
@@ -83,26 +87,12 @@ end of a freeRTOS queue. Now the front end just needs to pass on the decoded aud
 data to the queue with the server timestamp and chunk size. The backend reads
 timestamps and waits until the audio chunk has the correct playback-delay
 to be written to the DAC amplifer speaker through i2s DMA. When the backend pipeline
-is in sync, any offset get rolled in by micro tuning the APLL on the ESP. No
-sample manipulation needed.
+is in sync, any offset gets corrected by inserting a single sample every chunk_ms,
+which is determined by the server.
 
 
 ### Hardware
-You will need an ESP32 or ESP32-S2 and an I2S DAC. We recommend using a Lyrat board. For pinout see the config options.
-
-    -   ESP pinout                         MA12070P
-    ------------------------------------------------------
-                              ->            I2S_BCK        Audio Clock 3.072 MHz
-                              ->            I2S_WS         Frame Word Select or L/R
-                              ->            GND            Ground
-                              ->            I2S_DI         Audio data 24bits LSB first
-                              ->            MCLK           Master clk connect to I2S_BCK
-                              ->            I2C_SCL        I2C clock
-                              ->            I2C_SDA        I2C Data
-                              ->            GND            Ground
-                              ->            NENABLE        Amplifier Enable active low
-                              ->            NMUTE          Amplifier Mute active low
-
+You will need an ESP32 or ESP32-S2 and an I2S DAC. For pinout see the default config options in menuconfig (Audio Board).
 
 ## Installation
 
@@ -148,19 +138,22 @@ idf.py menuconfig
 Configure to match your setup
   - <b>Audio HAL :</b> Choose your audio board
     - Lyrat (4.3, 4.2)
-    - Lyrat TD (2.2, 2.1) --> not supported yet
+    - Lyrat TD (2.2, 2.1)
     - Lyrat Mini (1.1)
-    - KORVO DU1906	--> not supported yet
-    - ESP32-S2 Kaluga (1.2)	--> not supported yet
+    - KORVO DU1906
+    - ESP32-S2 Kaluga (1.2)
+    - ESP-AI-Thinker-ES8388 (2.2)
     - Or a custom board
   - <b>Custom Audio Board :</b> Configure your DAC and GPIO
     - DAC Chip :
       - TI PCM51XX/TAS57XX DAC (PCM51XX are stereo DAC in TSSOP package and TAS57XX are class-D amp in HTSSOP package. Both have i2s input and i2c control)
       - TI PCM5102A DAC (Very basic stereo DAC WITHOUT i2c control)
+      - TI TAS5805M DAC
       - Infineon MA120X0 (High power class-D amp in QFN package)
       - Analog Devices ADAU1961 (Stereo DAC with multiple analog inputs in LFCSP package)
       - Analog Devices MAX98357 (Very popular basic mono AMP without i2c control)
-    - DAC I2C control interface : Choose GPIO pin of your I2C line and address of the DAC. If your DAC doesn't support I2C (PCM5102A or equivalent), put unused GPIO values.
+      - Princton Technology PT8211
+    - DAC I2C control interface : Choose GPIO pin of your I2C line and address of the DAC. If your DAC doesn't support I2C (PCM5102A or equivalent), set them to -1.
     - I2C master interface : GPIO pin of your DAC I2S bus.
     - DAC interface configuration : Configure specific GPIO for your DAC functionnalities. Use `?` to have more info.
   - <b>ESP32 DSP processor config :</b>
@@ -175,7 +168,7 @@ Configure to match your setup
   - <b>Snapclient configuration :</b>
     - Use mDNS : The client will search on the network for the snapserver automatically. Your network must support mDNS.
     - Snapserver host : IP or URL of the server if mDNS is disabled or the mDNS resolution fail.
-    - Snapserver port :  Port of your snapserver, default is 1704.
+    - Snapserver port : Port of your snapserver, default is 1704.
     - Snapclient name : The name under wich your ESP will appear on the Snapserver.
     - HTTP Server Setting : The ESP create a basic webpage. You can configure the port to view this page and configure the DSP.
 
@@ -217,7 +210,7 @@ On a linux box:
 
 ```
 cd snapclient
-idf.py build 
+idf.py build
 curl snapclient.local:8032 --data-binary @- < build/snapclient.bin
 ```
 Replace `snapclient.local` with your clients IP address. If you have multiple clients you could use the Android or Web App to find out your clients IPs.

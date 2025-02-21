@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "driver/i2s_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -317,6 +318,12 @@ int deinit_player(void) {
   } else {
     vTaskDelete(playerTaskHandle);
     playerTaskHandle = NULL;
+  }
+
+  my_i2s_channel_disable(tx_chan);
+  if (tx_chan) {
+    i2s_del_channel(tx_chan);
+    tx_chan = NULL;
   }
 
   if (snapcastSettingsMux != NULL) {

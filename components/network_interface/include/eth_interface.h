@@ -6,6 +6,7 @@
 extern "C" {
 #endif
 
+bool eth_get_ip(esp_netif_ip_info_t *ip);
 void eth_start(void);
 
 #ifdef __cplusplus

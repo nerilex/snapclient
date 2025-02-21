@@ -22,17 +22,18 @@
 #include "wifi_provisioning.h"
 #endif
 
-static const char *TAG = "WIFI";
+static const char *TAG = "WIFI_IF";
 
 static void reset_reason_timer_counter_cb(void *);
 
 static char mac_address[18];
 
-EventGroupHandle_t s_wifi_event_group;
-
 static int s_retry_num = 0;
 
 static esp_netif_t *esp_wifi_netif = NULL;
+
+static esp_netif_ip_info_t ip_info = {{0}, {0}, {0}};
+static bool connected = false;
 
 #if ENABLE_WIFI_PROVISIONING
 static esp_timer_handle_t resetReasonTimerHandle = NULL;
@@ -95,16 +96,48 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     return;
   }
 
-  const esp_netif_ip_info_t *ip_info = &event->ip_info;
+  //  const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+  memcpy((void *)&ip_info, (const void *)&event->ip_info,
+         sizeof(esp_netif_ip_info_t));
 
   ESP_LOGI(TAG, "Wifi Got IP Address");
   ESP_LOGI(TAG, "~~~~~~~~~~~");
-  ESP_LOGI(TAG, "WIFIIP:" IPSTR, IP2STR(&ip_info->ip));
-  ESP_LOGI(TAG, "WIFIMASK:" IPSTR, IP2STR(&ip_info->netmask));
-  ESP_LOGI(TAG, "WIFIGW:" IPSTR, IP2STR(&ip_info->gw));
+  ESP_LOGI(TAG, "WIFIIP:" IPSTR, IP2STR(&ip_info.ip));
+  ESP_LOGI(TAG, "WIFIMASK:" IPSTR, IP2STR(&ip_info.netmask));
+  ESP_LOGI(TAG, "WIFIGW:" IPSTR, IP2STR(&ip_info.gw));
   ESP_LOGI(TAG, "~~~~~~~~~~~");
 
+  connected = true;
+
   s_retry_num = 0;
+}
+
+static void lost_ip_event_handler(void *arg, esp_event_base_t event_base,
+                                  int32_t event_id, void *event_data) {
+  ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+  if (!network_is_our_netif(NETWORK_INTERFACE_DESC_STA, event->esp_netif)) {
+    return;
+  }
+
+  // const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+  memcpy((void *)&ip_info, (const void *)&event->ip_info,
+         sizeof(esp_netif_ip_info_t));
+
+  connected = false;
+
+  ESP_LOGI(TAG, "Wifi Lost IP Address");
+}
+
+/**
+ */
+bool wifi_get_ip(esp_netif_ip_info_t *ip) {
+  if (ip) {
+    memcpy((void *)ip, (const void *)&ip_info, sizeof(esp_netif_ip_info_t));
+  }
+
+  return connected;
 }
 
 /**
@@ -121,11 +154,6 @@ void wifi_start(void) {
   esp_netif_config.route_prio = 128;
   esp_wifi_netif = esp_netif_create_wifi(WIFI_IF_STA, &esp_netif_config);
   esp_wifi_set_default_wifi_sta_handlers();
-
-  ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40));
-
-  ESP_ERROR_CHECK(esp_wifi_set_protocol(
-      WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
 
   // esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   //   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -176,10 +204,22 @@ void wifi_start(void) {
   /* Start Wi-Fi station */
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
+  ESP_ERROR_CHECK(esp_wifi_set_protocol(
+      WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+
+  ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40));
+
   wifi_config_t wifi_config;
   ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
   wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+  ESP_ERROR_CHECK(esp_event_handler_register(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, (esp_event_handler_t)&event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                             &got_ip_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
+                                             &lost_ip_event_handler, NULL));
 
   ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -206,6 +246,8 @@ void wifi_start(void) {
       WIFI_EVENT, ESP_EVENT_ANY_ID, (esp_event_handler_t)&event_handler, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                              &got_ip_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
+                                             &lost_ip_event_handler, NULL));
 
   ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -213,5 +255,3 @@ void wifi_start(void) {
            wifi_config.sta.ssid);
 #endif
 }
-
-esp_netif_t *get_current_netif(void) { return esp_wifi_netif; }
