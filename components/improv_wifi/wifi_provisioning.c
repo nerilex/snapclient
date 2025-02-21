@@ -5,6 +5,7 @@
  *      Author: karl
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/uart.h"
@@ -31,13 +32,25 @@ static QueueHandle_t uart0_queue;
 
 void uart_event_handler(void) {
   uart_event_t event;
-  uint8_t dtmp[RD_BUF_SIZE];
-  size_t buffered_size;
+  uint8_t *dtmp;
 
   // Waiting for UART event.
   if (xQueueReceive(uart0_queue, (void *)&event, (TickType_t)portMAX_DELAY)) {
-    bzero(dtmp, RD_BUF_SIZE);
-    // ESP_LOGI(TAG, "uart[%d] event:", UART_NUM_0);
+    dtmp = (uint8_t *)calloc(1, event.size);
+    if (!dtmp) {
+      ESP_LOGE(TAG, "no free memory for uart receive. Dropping data...");
+
+      uint8_t drop;
+      while (event.size--) {
+        uart_read_bytes(UART_NUM_0, &drop, event.size, portMAX_DELAY);
+      }
+
+      return;
+    }
+
+    // ESP_LOGI(TAG, "uart[%d] event: %d, size %d", UART_NUM_0, event.type,
+    // event.size);
+
     switch (event.type) {
       // Event of UART receving data
       /*We'd better handler data event fast, there would be much more data
@@ -53,7 +66,7 @@ void uart_event_handler(void) {
         break;
       // Event of HW FIFO overflow detected
       case UART_FIFO_OVF:
-        // ESP_LOGI(TAG, "hw fifo overflow");
+        //         ESP_LOGI(TAG, "hw fifo overflow");
 
         // If fifo overflow happened, you should consider adding flow control
         // for your application. The ISR has already reset the rx FIFO, As an
@@ -76,6 +89,8 @@ void uart_event_handler(void) {
         // ESP_LOGI(TAG, "uart event type: %d", event.type);
         break;
     }
+
+    free(dtmp);
   }
 }
 
@@ -151,16 +166,16 @@ bool improv_wifi_connect(const char *ssid, const char *password) {
   uint8_t count = 0;
   esp_netif_ip_info_t ip;
 
-  esp_wifi_disconnect();
-  while (wifi_get_ip(&ip) == true) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-
   wifi_config_t wifi_config;
   ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &wifi_config));
   strcpy((char *)wifi_config.sta.ssid, ssid);
   strcpy((char *)wifi_config.sta.password, password);
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+  esp_wifi_disconnect();
+  while (wifi_get_ip(&ip) == true) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 
   esp_wifi_connect();
   while (wifi_get_ip(&ip) == false) {

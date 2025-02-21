@@ -29,6 +29,7 @@ static uint8_t eth_port_cnt = 0;
 
 static esp_netif_ip_info_t ip_info = {{0}, {0}, {0}};
 static bool connected = false;
+static SemaphoreHandle_t connIpSemaphoreHandle = NULL;
 
 #if CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
 #define SPI_ETHERNETS_NUM CONFIG_SNAPCLIENT_SPI_ETHERNETS_NUM
@@ -364,6 +365,10 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
 
       break;
     case ETHERNET_EVENT_DISCONNECTED:
+      xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+      connected = false;
+      xSemaphoreGive(connIpSemaphoreHandle);
+
       ESP_LOGI(TAG, "Ethernet Link Down");
       break;
     case ETHERNET_EVENT_START:
@@ -392,12 +397,13 @@ static void lost_ip_event_handler(void *arg, esp_event_base_t event_base,
     if (network_is_our_netif(if_desc_str, event->esp_netif)) {
       // const esp_netif_ip_info_t *ip_info = &event->ip_info;
 
-      memcpy((void *)&ip_info, (const void *)&event->ip_info,
-             sizeof(esp_netif_ip_info_t));
-
       ESP_LOGI(TAG, "Ethernet Lost IP Address");
 
+      xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+      memcpy((void *)&ip_info, (const void *)&event->ip_info,
+             sizeof(esp_netif_ip_info_t));
       connected = false;
+      xSemaphoreGive(connIpSemaphoreHandle);
 
       break;
     }
@@ -417,10 +423,13 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     strcat(strcpy(if_desc_str, NETWORK_INTERFACE_DESC_ETH), num_str);
 
     if (network_is_our_netif(if_desc_str, event->esp_netif)) {
-      //      const esp_netif_ip_info_t *ip_info = &event->ip_info;
+      xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
 
       memcpy((void *)&ip_info, (const void *)&event->ip_info,
              sizeof(esp_netif_ip_info_t));
+      connected = true;
+
+      xSemaphoreGive(connIpSemaphoreHandle);
 
       ESP_LOGI(TAG, "Ethernet Got IP Address");
       ESP_LOGI(TAG, "~~~~~~~~~~~");
@@ -428,8 +437,6 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
       ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info.netmask));
       ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info.gw));
       ESP_LOGI(TAG, "~~~~~~~~~~~");
-
-      connected = true;
 
       break;
     }
@@ -439,11 +446,16 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 /**
  */
 bool eth_get_ip(esp_netif_ip_info_t *ip) {
+  xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+
   if (ip) {
     memcpy((void *)ip, (const void *)&ip_info, sizeof(esp_netif_ip_info_t));
   }
+  bool _connected = connected;
 
-  return connected;
+  xSemaphoreGive(connIpSemaphoreHandle);
+
+  return _connected;
 }
 
 static void eth_on_got_ipv6(void *arg, esp_event_base_t event_base,
@@ -465,6 +477,10 @@ void eth_start(void) {
   // Initialize Ethernet driver
   esp_eth_handle_t *eth_handles;
   esp_netif_t *eth_netif;
+
+  if (!connIpSemaphoreHandle) {
+    connIpSemaphoreHandle = xSemaphoreCreateMutex();
+  }
 
   ESP_ERROR_CHECK(eth_init(&eth_handles, &eth_port_cnt));
 

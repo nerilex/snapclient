@@ -13,6 +13,9 @@
 #include "esp_netif_types.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+#include "freertos/semphr.h"
 #include "network_interface.h"
 #include "nvs_flash.h"
 
@@ -34,6 +37,7 @@ static esp_netif_t *esp_wifi_netif = NULL;
 
 static esp_netif_ip_info_t ip_info = {{0}, {0}, {0}};
 static bool connected = false;
+static SemaphoreHandle_t connIpSemaphoreHandle = NULL;
 
 #if ENABLE_WIFI_PROVISIONING
 static esp_timer_handle_t resetReasonTimerHandle = NULL;
@@ -79,6 +83,10 @@ static void event_handler(void *arg, esp_event_base_t event_base, int event_id,
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     if ((s_retry_num < WIFI_MAXIMUM_RETRY) || (WIFI_MAXIMUM_RETRY == 0)) {
+      xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+      connected = false;
+      xSemaphoreGive(connIpSemaphoreHandle);
+
       esp_wifi_connect();
       s_retry_num++;
       ESP_LOGI(TAG, "retry to connect to the AP");
@@ -96,10 +104,13 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     return;
   }
 
-  //  const esp_netif_ip_info_t *ip_info = &event->ip_info;
+  xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
 
   memcpy((void *)&ip_info, (const void *)&event->ip_info,
          sizeof(esp_netif_ip_info_t));
+  connected = true;
+
+  xSemaphoreGive(connIpSemaphoreHandle);
 
   ESP_LOGI(TAG, "Wifi Got IP Address");
   ESP_LOGI(TAG, "~~~~~~~~~~~");
@@ -107,8 +118,6 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
   ESP_LOGI(TAG, "WIFIMASK:" IPSTR, IP2STR(&ip_info.netmask));
   ESP_LOGI(TAG, "WIFIGW:" IPSTR, IP2STR(&ip_info.gw));
   ESP_LOGI(TAG, "~~~~~~~~~~~");
-
-  connected = true;
 
   s_retry_num = 0;
 }
@@ -122,10 +131,13 @@ static void lost_ip_event_handler(void *arg, esp_event_base_t event_base,
 
   // const esp_netif_ip_info_t *ip_info = &event->ip_info;
 
+  xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+
   memcpy((void *)&ip_info, (const void *)&event->ip_info,
          sizeof(esp_netif_ip_info_t));
-
   connected = false;
+
+  xSemaphoreGive(connIpSemaphoreHandle);
 
   ESP_LOGI(TAG, "Wifi Lost IP Address");
 }
@@ -133,16 +145,25 @@ static void lost_ip_event_handler(void *arg, esp_event_base_t event_base,
 /**
  */
 bool wifi_get_ip(esp_netif_ip_info_t *ip) {
+  xSemaphoreTake(connIpSemaphoreHandle, portMAX_DELAY);
+
   if (ip) {
     memcpy((void *)ip, (const void *)&ip_info, sizeof(esp_netif_ip_info_t));
   }
+  bool _connected = connected;
 
-  return connected;
+  xSemaphoreGive(connIpSemaphoreHandle);
+
+  return _connected;
 }
 
 /**
  */
 void wifi_start(void) {
+  if (!connIpSemaphoreHandle) {
+    connIpSemaphoreHandle = xSemaphoreCreateMutex();
+  }
+
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 

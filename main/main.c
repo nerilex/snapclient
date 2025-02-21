@@ -30,8 +30,6 @@
 #include "eth_interface.h"
 #endif
 
-#include "nvs_flash.h"
-// #include "wifi_interface.h"
 #include "board.h"
 #include "es8388.h"
 #include "esp_netif.h"
@@ -44,6 +42,7 @@
 #include "mdns.h"
 #include "net_functions.h"
 #include "network_interface.h"
+#include "nvs_flash.h"
 
 // Web socket server
 // #include "websocket_if.h"
