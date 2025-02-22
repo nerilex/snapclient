@@ -22,7 +22,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
-#include "include/eth_interface.h"
 #include "sdkconfig.h"
 
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
