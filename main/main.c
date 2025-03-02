@@ -350,12 +350,17 @@ static FLAC__StreamDecoderWriteStatus write_callback(
     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
   }
 
-  pcmChunk.outData =
-      (uint8_t *)realloc(pcmChunk.outData, pcmChunk.bytes + bytes);
-  if (!pcmChunk.outData) {
-    ESP_LOGE(TAG, "%s, failed to allocate PCM chunk payload", __func__);
-    return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
-  }
+  uint8_t * pcmData;
+  do {
+     pcmData = (uint8_t *)realloc(pcmChunk.outData, pcmChunk.bytes + bytes);
+    if (!pcmData) {
+      ESP_LOGW(TAG, "%s, failed to allocate PCM chunk payload, try again", __func__);
+      vTaskDelay(pdMS_TO_TICKS(5));
+      //return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    }
+  } while(!pcmData);
+  
+  pcmChunk.outData = pcmData;
 
   for (i = 0; i < frame->header.blocksize; i++) {
     // write little endian

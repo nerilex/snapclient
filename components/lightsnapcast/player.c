@@ -294,6 +294,9 @@ static int destroy_pcm_queue(QueueHandle_t *queueHandle) {
           free_pcm_chunk(chnk);
         }
       }
+      else {
+        ESP_LOGE(TAG, "%s: can't get pcm chunk", __func__);
+      }
     }
 
     // delete the queue
@@ -312,6 +315,9 @@ static int destroy_pcm_queue(QueueHandle_t *queueHandle) {
 int deinit_player(void) {
   int ret = 0;
 
+  // must disable i2s before stopping player task or it will hang
+  my_i2s_channel_disable(tx_chan);
+
   // stop the task
   if (playerTaskHandle == NULL) {
     ESP_LOGV(TAG, "no sync task created?");
@@ -319,8 +325,7 @@ int deinit_player(void) {
     vTaskDelete(playerTaskHandle);
     playerTaskHandle = NULL;
   }
-
-  my_i2s_channel_disable(tx_chan);
+  
   if (tx_chan) {
     i2s_del_channel(tx_chan);
     tx_chan = NULL;
@@ -330,7 +335,6 @@ int deinit_player(void) {
     vSemaphoreDelete(snapcastSettingsMux);
     snapcastSettingsMux = NULL;
   }
-
   ret = destroy_pcm_queue(&pcmChkQHdl);
 
   if (latencyBufSemaphoreHandle == NULL) {

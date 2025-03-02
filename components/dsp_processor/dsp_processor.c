@@ -402,7 +402,7 @@ int dsp_processor_worker(void *p_pcmChnk, const void *p_scSet) {
         for (i = 0; i < max; i++) {
           int16_t channel0 = (int16_t)((tmp[i] & 0xFFFF0000) >> 16);
           int16_t channel1 = (int16_t)(tmp[i] & 0x0000FFFF);
-          int16_t mixMono = (float)channel0 / 2.0 + (float)channel1 / 2.0;
+          int16_t mixMono = ((int32_t)channel0 + (int32_t)channel1) / 2;
 
           tmp[i] = ((uint32_t)mixMono << 16) | ((uint32_t)mixMono & 0x0000FFFF);
         }
