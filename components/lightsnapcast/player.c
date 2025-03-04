@@ -100,6 +100,7 @@ static bool gpTimerRunning = false;
 static void player_task(void *pvParameters);
 
 extern void audio_set_mute(bool mute);
+extern void audio_dac_enable(bool enabled);
 
 static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
 static bool i2sEnabled = false;
@@ -678,8 +679,12 @@ static bool IRAM_ATTR timer_group0_alarm_cb(
 esp_err_t my_gptimer_stop(gptimer_handle_t timer) {
   if (gpTimerRunning == true) {
     gpTimerRunning = false;
-
-    return gptimer_stop(timer);
+    
+    esp_err_t ret = 0;
+    ret |= gptimer_stop(timer);
+    ret |= gptimer_disable(gptimer);
+    
+    return ret;
   }
 
   return ESP_OK;
@@ -727,22 +732,16 @@ static void tg0_timer_init(void) {
   };
   ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, NULL));
 
-  ESP_LOGI(TAG, "enable initial sync timer");
-  ESP_ERROR_CHECK(gptimer_enable(gptimer));
+  ESP_LOGI(TAG, "init initial sync timer");
 }
 
 /**
  *
  */
 static void tg0_timer1_start(uint64_t alarm_value) {
-  //  timer_pause(TIMER_GROUP_1, TIMER_1);
-  //  timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
-  //  timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0);
-  //  timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN);
-  //  timer_start(TIMER_GROUP_1, TIMER_1);
-
   if (gptimer) {
     my_gptimer_stop(gptimer);
+    ESP_ERROR_CHECK(gptimer_enable(gptimer));
     ESP_ERROR_CHECK(gptimer_set_raw_count(gptimer, 0));
     gptimer_alarm_config_t alarm_config1 = {
         .alarm_count = alarm_value,  // period
@@ -1147,6 +1146,8 @@ int32_t pcm_chunk_queue_msg_waiting(void) {
   return ret;
 }
 
+static bool audioCodecCanSleep = false;
+
 /**
  *
  */
@@ -1186,6 +1187,8 @@ static void player_task(void *pvParameters) {
   snapcastSettingQueueHandle = xQueueCreate(1, sizeof(uint8_t));
 
   initialSync = 0;
+  
+  //audio_hal_ctrl_codec(audio_hal_handle_t audio_hal, audio_hal_codec_mode_t mode, audio_hal_ctrl_t audio_hal_ctrl)
 
   audio_set_mute(true);
 
@@ -1410,7 +1413,9 @@ static void player_task(void *pvParameters) {
           // vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
 
           my_gptimer_stop(gptimer);
-
+          
+          audio_dac_enable(true);
+          
           my_i2s_channel_enable(tx_chan);
 
           // get timer value so we can get the real age
@@ -1437,6 +1442,19 @@ static void player_task(void *pvParameters) {
             chnk = NULL;
           }
 
+          wifi_ap_record_t ap;
+          esp_wifi_sta_get_ap_info(&ap);
+
+          my_gptimer_stop(gptimer);
+          
+          int msgWaiting = uxQueueMessagesWaiting(pcmChkQHdl);
+
+          ESP_LOGW(TAG,
+                   "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
+                   "largest block %d, rssi: %d, left in queue %d",
+                   age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
+                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT), ap.rssi, msgWaiting);
+                   
           // get count of chunks we are late for
           uint32_t c = ceil((float)age / (float)chunkDuration_us);  // round up
 
@@ -1450,17 +1468,6 @@ static void player_task(void *pvParameters) {
               break;
             }
           }
-
-          wifi_ap_record_t ap;
-          esp_wifi_sta_get_ap_info(&ap);
-
-          my_gptimer_stop(gptimer);
-
-          ESP_LOGW(TAG,
-                   "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
-                   "largest block %d, rssi: %d",
-                   age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
-                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT), ap.rssi);
 
           dir = 0;
 
@@ -1625,7 +1632,8 @@ static void player_task(void *pvParameters) {
           if ((msgWaiting == 0) ||
               (MEDIANFILTER_isFull(&shortMedianFilter, 0) &&
                ((shortMedian > hardResyncThreshold) ||
-                (shortMedian < -hardResyncThreshold)))) {
+                (shortMedian < -hardResyncThreshold)))) 
+          {
             if (chnk != NULL) {
               free_pcm_chunk(chnk);
               chnk = NULL;
@@ -1687,16 +1695,11 @@ static void player_task(void *pvParameters) {
           }
 #endif
 
-          //        ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d, %lld,
-          //        %llu", dir, age,
-          //                 shortMedian, miniMedian,
-          //                 uxQueueMessagesWaiting(pcmChkQHdl),
-          //                 insertedSamplesCounter, chkDur_us);
-          //
-          // ESP_LOGI(TAG, "%d, %lldus, %lldus, %lldus, q:%d, %lld, %lld", dir,
-          //         age, shortMedian, miniMedian,
-          //         uxQueueMessagesWaiting(pcmChkQHdl), insertedSamplesCounter,
-          //         chunkDuration_us);
+          
+           ESP_LOGD(TAG, "%d, %lldus, %lldus, %lldus, q:%d, %lld, %lld", dir,
+                   age, shortMedian, miniMedian,
+                   uxQueueMessagesWaiting(pcmChkQHdl), insertedSamplesCounter,
+                   chunkDuration_us);
 
           // ESP_LOGI( TAG, "8b f %d b %d",
           // 		   heap_caps_get_free_size(MALLOC_CAP_8BIT |
@@ -1735,9 +1738,10 @@ static void player_task(void *pvParameters) {
                  "diff2Server: %llds, %lld.%lldms",
                  uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
       }
+      
+      audio_dac_enable(false);
 
       dir = 0;
-
       initialSync = 0;
 
       audio_set_mute(true);

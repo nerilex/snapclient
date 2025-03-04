@@ -1,9 +1,3 @@
-/* Play flac file by audio pipeline
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
 
 #include <stdint.h>
 #include <string.h>
@@ -16,22 +10,25 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_pm.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/portmacro.h"
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
+
 #include "hal/gpio_types.h"
 #include "idf_additions.h"
-#include "lwip/ip_addr.h"
-#include "lwip/netif.h"
+
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
 #include "eth_interface.h"
 #endif
 
 #include "board.h"
-#include "es8388.h"
+#include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 #include "esp_netif.h"
 #include "lwip/api.h"
 #include "lwip/dns.h"
@@ -135,6 +132,7 @@ dspFlows_t dspFlow = dspfEQBassTreble;
 typedef struct audioDACdata_s {
   bool mute;
   int volume;
+  bool enabled;
 } audioDACdata_t;
 
 static audioDACdata_t audioDAC_data;
@@ -421,6 +419,19 @@ void init_snapcast(QueueHandle_t audioQHdl) {
   audioDACSemaphore = xSemaphoreCreateMutex();
   audioDAC_data.mute = true;
   audioDAC_data.volume = -1;
+  audioDAC_data.enabled = false;
+}
+
+/**
+ *
+ */
+void audio_dac_enable(bool enabled) {
+  xSemaphoreTake(audioDACSemaphore, portMAX_DELAY);
+  if (enabled != audioDAC_data.enabled) {
+    audioDAC_data.enabled = enabled;
+    xQueueOverwrite(audioDACQHdl, &audioDAC_data);
+  }
+  xSemaphoreGive(audioDACSemaphore);
 }
 
 /**
@@ -1977,8 +1988,6 @@ static void http_get_task(void *pvParameters) {
                           decoderChunk.outData = NULL;
                           decoderChunk.type = SNAPCAST_MESSAGE_CODEC_HEADER;
 
-                          ESP_LOGI(TAG, "############### CODEC");
-
                           flacDecoder = FLAC__stream_decoder_new();
                           if (flacDecoder == NULL) {
                             ESP_LOGE(TAG, "Failed to init flac decoder");
@@ -2691,7 +2700,7 @@ void app_main(void) {
   }
 
   audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE,
-                       AUDIO_HAL_CTRL_START);
+                       AUDIO_HAL_CTRL_STOP);
   audio_hal_set_mute(board_handle->audio_hal,
                      true);  // ensure no noise is sent after firmware crash
 
@@ -2813,8 +2822,14 @@ void app_main(void) {
   audioDACdata_t dac_data;
   audioDACdata_t dac_data_old = {
       .mute = true,
-      .volume = 100,
+      .volume = -1,
+      .enabled = false,
   };
+  
+#if 1
+  esp_pm_config_t pmConfig = {80 , 240, true};
+  esp_pm_configure(&pmConfig);
+#endif
 
   while (1) {
     if (xQueueReceive(audioQHdl, &dac_data, portMAX_DELAY) == pdTRUE) {
@@ -2823,6 +2838,14 @@ void app_main(void) {
       }
       if (dac_data.volume != dac_data_old.volume) {
         audio_hal_set_volume(board_handle->audio_hal, dac_data.volume);
+      }
+      if (dac_data.enabled != dac_data_old.enabled) {
+        if (dac_data.enabled) { 
+          audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+        }
+        else {
+          audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_STOP);
+        }
       }
       dac_data_old = dac_data;
     }
