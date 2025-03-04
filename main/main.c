@@ -19,12 +19,7 @@
 #include "freertos/task.h"
 
 #include "hal/gpio_types.h"
-#include "idf_additions.h"
-
-#if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
-    CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
-#include "eth_interface.h"
-#endif
+#include "freertos/idf_additions.h"
 
 #include "board.h"
 #include "lwip/ip_addr.h"
