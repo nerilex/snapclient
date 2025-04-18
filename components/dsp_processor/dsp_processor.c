@@ -50,6 +50,7 @@ dspFlows_t dspFlowInit = dspfBiamp;
 #if CONFIG_SNAPCLIENT_DSP_FLOW_BASS_TREBLE_EQ
 dspFlows_t dspFlowInit = dspfEQBassTreble;
 #endif
+#define SNAPCAST_USE_SOFT_VOL CONFIG_SNAPCLIENT_USE_SOFT_VOL
 #endif
 
 /**
