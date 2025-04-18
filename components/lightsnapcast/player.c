@@ -705,7 +705,6 @@ static void tg0_timer_deinit(void) {
   //	timer_deinit(TIMER_GROUP_1, TIMER_1);
   if (gptimer) {
     ESP_ERROR_CHECK(my_gptimer_stop(gptimer));
-    ESP_ERROR_CHECK(gptimer_disable(gptimer));
     ESP_ERROR_CHECK(gptimer_del_timer(gptimer));
     gptimer = NULL;
   }
