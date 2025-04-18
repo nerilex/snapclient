@@ -259,14 +259,13 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
   }
 
   i2s_std_config_t tx_std_cfg = {
-      .clk_cfg = i2s_clkcfg,
+    .clk_cfg = i2s_clkcfg,
 #if CONFIG_I2S_USE_MSB_FORMAT
-      .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
+    .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
 #else
-      .slot_cfg =
-          I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
+    .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, I2S_SLOT_MODE_STEREO),
 #endif
-      .gpio_cfg = pin_config0,
+    .gpio_cfg = pin_config0,
   };
 
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
@@ -294,8 +293,7 @@ static int destroy_pcm_queue(QueueHandle_t *queueHandle) {
         if (chnk != NULL) {
           free_pcm_chunk(chnk);
         }
-      }
-      else {
+      } else {
         ESP_LOGE(TAG, "%s: can't get pcm chunk", __func__);
       }
     }
@@ -326,7 +324,7 @@ int deinit_player(void) {
     vTaskDelete(playerTaskHandle);
     playerTaskHandle = NULL;
   }
-  
+
   if (tx_chan) {
     i2s_del_channel(tx_chan);
     tx_chan = NULL;
@@ -679,11 +677,11 @@ static bool IRAM_ATTR timer_group0_alarm_cb(
 esp_err_t my_gptimer_stop(gptimer_handle_t timer) {
   if (gpTimerRunning == true) {
     gpTimerRunning = false;
-    
+
     esp_err_t ret = 0;
     ret |= gptimer_stop(timer);
     ret |= gptimer_disable(gptimer);
-    
+
     return ret;
   }
 
@@ -1187,8 +1185,9 @@ static void player_task(void *pvParameters) {
   snapcastSettingQueueHandle = xQueueCreate(1, sizeof(uint8_t));
 
   initialSync = 0;
-  
-  //audio_hal_ctrl_codec(audio_hal_handle_t audio_hal, audio_hal_codec_mode_t mode, audio_hal_ctrl_t audio_hal_ctrl)
+
+  // audio_hal_ctrl_codec(audio_hal_handle_t audio_hal, audio_hal_codec_mode_t
+  // mode, audio_hal_ctrl_t audio_hal_ctrl)
 
   audio_set_mute(true);
 
@@ -1413,9 +1412,9 @@ static void player_task(void *pvParameters) {
           // vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
 
           my_gptimer_stop(gptimer);
-          
+
           audio_dac_enable(true);
-          
+
           my_i2s_channel_enable(tx_chan);
 
           // get timer value so we can get the real age
@@ -1446,15 +1445,16 @@ static void player_task(void *pvParameters) {
           esp_wifi_sta_get_ap_info(&ap);
 
           my_gptimer_stop(gptimer);
-          
+
           int msgWaiting = uxQueueMessagesWaiting(pcmChkQHdl);
 
           ESP_LOGW(TAG,
                    "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
                    "largest block %d, rssi: %d, left in queue %d",
                    age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
-                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT), ap.rssi, msgWaiting);
-                   
+                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT), ap.rssi,
+                   msgWaiting);
+
           // get count of chunks we are late for
           uint32_t c = ceil((float)age / (float)chunkDuration_us);  // round up
 
@@ -1632,8 +1632,7 @@ static void player_task(void *pvParameters) {
           if ((msgWaiting == 0) ||
               (MEDIANFILTER_isFull(&shortMedianFilter, 0) &&
                ((shortMedian > hardResyncThreshold) ||
-                (shortMedian < -hardResyncThreshold)))) 
-          {
+                (shortMedian < -hardResyncThreshold)))) {
             if (chnk != NULL) {
               free_pcm_chunk(chnk);
               chnk = NULL;
@@ -1695,8 +1694,7 @@ static void player_task(void *pvParameters) {
           }
 #endif
 
-          
-           ESP_LOGD(TAG, "%d, %lldus, %lldus, %lldus, q:%d, %lld, %lld", dir,
+          ESP_LOGD(TAG, "%d, %lldus, %lldus, %lldus, q:%d, %lld, %lld", dir,
                    age, shortMedian, miniMedian,
                    uxQueueMessagesWaiting(pcmChkQHdl), insertedSamplesCounter,
                    chunkDuration_us);
@@ -1738,7 +1736,7 @@ static void player_task(void *pvParameters) {
                  "diff2Server: %llds, %lld.%lldms",
                  uxQueueMessagesWaiting(pcmChkQHdl), sec, msec, usec);
       }
-      
+
       audio_dac_enable(false);
 
       dir = 0;
